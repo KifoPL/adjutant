@@ -13,20 +13,25 @@ namespace Adjutant.Tests.Tools;
 public class GetContextualEmailSummaryToolTests
 {
     [TestMethod]
-    public async Task GetContextualEmailSummary_NoAccounts_ThrowsMcpException()
+    public async Task GetContextualEmailSummary_NoAccounts_ReturnsEmptyWithWarning()
     {
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([]);
 
         var factExp = new IProviderServiceFactoryCreateExpectations();
         var tool = new GetContextualEmailSummaryTool(regExp.Instance(), factExp.Instance(),
             NullLogger<GetContextualEmailSummaryTool>.Instance);
 
-        var ex = await Assert.ThrowsExactlyAsync<McpException>(
-            () => tool.GetContextualEmailSummary());
-        Assert.AreEqual("No accounts configured", ex.Message);
+        var result = await tool.GetContextualEmailSummary(topics: "invoice");
+
+        // Same shape as the existing "no emails found" payload.
+        NoAccountsAssert.IsEmptyWithWarning(result, resultProperty: null);
+        using var doc = JsonDocument.Parse(result);
+        Assert.AreEqual("No emails found matching criteria", doc.RootElement.GetProperty("message").GetString());
+        Assert.AreEqual(0, doc.RootElement.GetProperty("accountsSearched").GetInt32());
+        Assert.AreEqual("invoice", doc.RootElement.GetProperty("searchKeywords")[0].GetString());
         regExp.Verify();
+        factExp.Verify();
     }
 
     [TestMethod]
@@ -35,8 +40,7 @@ public class GetContextualEmailSummaryToolTests
         var account = TestData.CreateAccount(id: "acc-1", provider: "microsoft365");
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([account]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([account]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.GetEmailsAsync("acc-1", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -77,8 +81,7 @@ public class GetContextualEmailSummaryToolTests
         };
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([account]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([account]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.GetEmailsAsync("acc-1", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -93,10 +96,10 @@ public class GetContextualEmailSummaryToolTests
         var result = await tool.GetContextualEmailSummary();
         var doc = JsonDocument.Parse(result);
 
-        Assert.AreEqual(2, doc.RootElement.GetProperty("TotalEmails").GetInt32());
-        Assert.AreEqual(1, doc.RootElement.GetProperty("AccountsSearched").GetInt32());
-        Assert.IsTrue(doc.RootElement.TryGetProperty("TopicClusters", out _));
-        Assert.IsTrue(doc.RootElement.TryGetProperty("PersonaContexts", out _));
+        Assert.AreEqual(2, doc.RootElement.GetProperty("totalEmails").GetInt32());
+        Assert.AreEqual(1, doc.RootElement.GetProperty("accountsSearched").GetInt32());
+        Assert.IsTrue(doc.RootElement.TryGetProperty("topicClusters", out _));
+        Assert.IsTrue(doc.RootElement.TryGetProperty("personaContexts", out _));
 
         regExp.Verify();
         factExp.Verify();
@@ -118,8 +121,7 @@ public class GetContextualEmailSummaryToolTests
         };
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([okAccount, staleAccount]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([okAccount, staleAccount]);
 
         var okProvExp = new IProviderServiceCreateExpectations();
         okProvExp.Setups.GetEmailsAsync("acc-ok", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -138,11 +140,11 @@ public class GetContextualEmailSummaryToolTests
 
         var doc = JsonDocument.Parse(await tool.GetContextualEmailSummary());
 
-        Assert.AreEqual(1, doc.RootElement.GetProperty("TotalEmails").GetInt32());
-        var warnings = doc.RootElement.GetProperty("Warnings");
+        Assert.AreEqual(1, doc.RootElement.GetProperty("totalEmails").GetInt32());
+        var warnings = doc.RootElement.GetProperty("warnings");
         Assert.AreEqual(1, warnings.GetArrayLength());
-        Assert.AreEqual("acc-stale", warnings[0].GetProperty("AccountId").GetString());
-        StringAssert.Contains(warnings[0].GetProperty("Error").GetString(), "requires re-authentication");
+        Assert.AreEqual("acc-stale", warnings[0].GetProperty("accountId").GetString());
+        StringAssert.Contains(warnings[0].GetProperty("error").GetString(), "requires re-authentication");
     }
 
     [TestMethod]
@@ -152,8 +154,7 @@ public class GetContextualEmailSummaryToolTests
         var account = TestData.CreateAccount(id: "acc-1", provider: "microsoft365");
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([account]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([account]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.GetEmailsAsync("acc-1", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -170,6 +171,6 @@ public class GetContextualEmailSummaryToolTests
         Assert.AreEqual("No emails found matching criteria", doc.RootElement.GetProperty("message").GetString());
         var warnings = doc.RootElement.GetProperty("warnings");
         Assert.AreEqual(1, warnings.GetArrayLength());
-        Assert.AreEqual("acc-1", warnings[0].GetProperty("AccountId").GetString());
+        Assert.AreEqual("acc-1", warnings[0].GetProperty("accountId").GetString());
     }
 }

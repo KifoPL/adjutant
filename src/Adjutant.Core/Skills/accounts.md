@@ -75,13 +75,29 @@ The exceptions where omitting `accountId` is fine:
 - `get_emails`, `search_emails`, `list_calendars`, `get_calendar_events`,
   `get_contacts`, `search_contacts` — these fan out across all enabled
   accounts when `accountId` is omitted, which is often what you want.
-- `get_contextual_email_summary` — always fans out across all accounts.
+- `get_contextual_email_summary` — always fans out across all enabled
+  accounts.
+
+Disabled accounts are never part of a fan-out.
 
 The calendar fan-outs (`list_calendars`, `get_calendar_events`)
 automatically skip accounts that lack a `calendar` capability (e.g.
-email-only IMAP accounts), so those never produce errors or warnings.
-Targeting such an account explicitly via `accountId` returns no events
-plus an actionable warning.
+email-only IMAP accounts), so those don't produce errors or warnings
+while at least one account can be read. If that skips every account,
+the result is empty plus one warning, `No accounts permit reading
+calendars. ...`, rather than an error. Targeting such an account
+explicitly via `accountId` returns no events plus an actionable warning.
+
+If the server has no enabled accounts at all, every fan-out (including
+`get_contextual_email_summary`, and `get_calendar_events` given only a
+`calendarId`) returns an empty result plus one `warnings` entry with no
+`accountId`:
+`{ "warning": "No enabled accounts are configured on this server. ..." }`.
+Tell the user to add an account (admin console on the HTTP server, or
+the CLI) rather than reporting "no emails" or "no events". If enabled
+accounts exist but none permit the operation, the email and contacts
+fan-outs error with `No accounts permit ...`; the calendar fan-outs
+return the warning above instead.
 
 ## Capability checking before write operations
 
@@ -102,7 +118,7 @@ which will fail at the provider layer with a less helpful message.
 `send_email` accepts a missing `accountId`. When omitted:
 
 1. Extract domain from the first recipient (`to[0]` after `@`).
-2. Look up accounts whose `domains` array contains that domain.
+2. Look up enabled accounts whose `domains` array contains that domain.
 3. If exactly one matches, send from it.
 4. If multiple match, the first one is used (deterministic but arbitrary).
 5. If none match, the first configured account is used as fallback.
@@ -123,6 +139,14 @@ the result.
 
 ## Disabled accounts
 
-Accounts can be marked disabled via the admin UI. `list_accounts`
-returns only enabled accounts. If a previously-known `accountId` stops
-working, re-call `list_accounts` to refresh.
+Accounts can be marked disabled via the admin UI. A disabled account is
+switched off for every tool: `list_accounts` leaves it out, the fan-outs
+and smart routing never pick it, and naming it explicitly fails with
+`Account '<id>' is disabled. ...` (in a `bulk_*` tool, just that item
+fails). If a previously-known `accountId` stops working, re-call
+`list_accounts` to refresh.
+
+To find out whether an account the user expects is missing because it
+is disabled, call `list_accounts(includeDisabled=true)`: every entry
+carries `enabled`. Tell the user to re-enable it in the admin console
+rather than working around it.

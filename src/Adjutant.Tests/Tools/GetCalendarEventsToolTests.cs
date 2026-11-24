@@ -194,7 +194,29 @@ public class GetCalendarEventsToolTests
     }
 
     [TestMethod]
-    public async Task GetCalendarEvents_NoAccountsConfigured_ThrowsMcpException()
+    public async Task GetCalendarEvents_NoAccountPermitsCalendars_ReturnsEmptyWithPermissionWarning()
+    {
+        var emailOnly = TestData.CreateAccount(id: "acc-imap", provider: "imap");
+
+        var regExp = new IAccountRegistryCreateExpectations();
+        regExp.Setups.GetEnabledAccounts().ReturnValue([emailOnly]);
+
+        var factExp = new IProviderServiceFactoryCreateExpectations();
+        var tool = new GetCalendarEventsTool(regExp.Instance(), factExp.Instance(),
+            NullLogger<GetCalendarEventsTool>.Instance);
+
+        var doc = JsonDocument.Parse(await tool.GetCalendarEvents(TestTimeZone, Start, End, null));
+
+        Assert.AreEqual(0, doc.RootElement.GetProperty("events").GetArrayLength());
+        var warnings = doc.RootElement.GetProperty("warnings");
+        Assert.AreEqual(1, warnings.GetArrayLength());
+        StringAssert.Contains(warnings[0].GetProperty("warning").GetString(), "No accounts permit reading calendars");
+        regExp.Verify();
+        factExp.Verify();
+    }
+
+    [TestMethod]
+    public async Task GetCalendarEvents_CalendarIdOnly_NoAccounts_ReturnsEmptyWithWarning()
     {
         var regExp = new IAccountRegistryCreateExpectations();
         regExp.Setups.GetEnabledAccounts().ReturnValue([]);
@@ -203,10 +225,26 @@ public class GetCalendarEventsToolTests
         var tool = new GetCalendarEventsTool(regExp.Instance(), factExp.Instance(),
             NullLogger<GetCalendarEventsTool>.Instance);
 
-        var ex = await Assert.ThrowsExactlyAsync<McpException>(
-            () => tool.GetCalendarEvents(TestTimeZone, Start, End, null));
-        Assert.AreEqual("No accounts found", ex.Message);
+        NoAccountsAssert.IsEmptyWithWarning(
+            await tool.GetCalendarEvents(TestTimeZone, Start, End, accountId: null, calendarId: "cal-1"), "events");
         regExp.Verify();
+        factExp.Verify();
+    }
+
+    [TestMethod]
+    public async Task GetCalendarEvents_NoAccountsConfigured_ReturnsEmptyWithWarning()
+    {
+        var regExp = new IAccountRegistryCreateExpectations();
+        regExp.Setups.GetEnabledAccounts().ReturnValue([]);
+
+        var factExp = new IProviderServiceFactoryCreateExpectations();
+        var tool = new GetCalendarEventsTool(regExp.Instance(), factExp.Instance(),
+            NullLogger<GetCalendarEventsTool>.Instance);
+
+        NoAccountsAssert.IsEmptyWithWarning(
+            await tool.GetCalendarEvents(TestTimeZone, Start, End, null), "events");
+        regExp.Verify();
+        factExp.Verify();
     }
 
     [TestMethod]

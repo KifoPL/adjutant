@@ -23,19 +23,25 @@ public sealed class ListCalendarsTool(
     {
         logger.LogInformation("Listing calendars: accountId={AccountId}", accountId);
 
+        // A failed account is reported here rather than being indistinguishable from one with no data.
+        var warnings = new List<object>();
+
         // Determine which accounts to query
         List<AccountInfo> validAccounts;
         if (string.IsNullOrEmpty(accountId))
         {
-            validAccounts = accountRegistry.GetEnabledAccounts().ToList();
-            if (validAccounts.Count == 0)
-                throw new McpException("No accounts found");
-
-            // Skip accounts that can't or may not be read: email-only providers (e.g. IMAP),
-            // where listing calendars would throw NotSupportedException, and accounts whose
-            // calendar-read permission is revoked.
-            validAccounts = ToolGuard.FilterByPermission(
-                validAccounts, AccountPermission.CalendarRead, logger, "list_calendars");
+            validAccounts = ToolGuard.GetFanOutAccounts(accountRegistry, warnings);
+            if (validAccounts.Count > 0)
+            {
+                // Skip accounts that can't or may not be read: email-only providers (e.g. IMAP),
+                // where listing calendars would throw NotSupportedException, and accounts whose
+                // calendar-read permission is revoked. If that skips every account, say so, so
+                // an empty list isn't mistaken for an account with no calendars.
+                validAccounts = ToolGuard.FilterByPermission(
+                    validAccounts, AccountPermission.CalendarRead, logger, "list_calendars");
+                if (validAccounts.Count == 0)
+                    warnings.Add(ToolGuard.NoPermittedAccountsWarning(AccountPermission.CalendarRead));
+            }
         }
         else
         {
@@ -48,10 +54,6 @@ public sealed class ListCalendarsTool(
 
         try
         {
-
-            // A failed account is reported here rather than being indistinguishable from one with no data.
-            var warnings = new List<object>();
-
             // Query all accounts in parallel
             var tasks = validAccounts.Select(async account =>
             {

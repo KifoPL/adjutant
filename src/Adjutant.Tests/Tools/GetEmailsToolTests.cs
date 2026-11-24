@@ -66,8 +66,7 @@ public class GetEmailsToolTests
         var emails = new List<EmailMessage> { TestData.CreateEmail(id: "e1", accountId: "acc-1") };
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([acc1]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([acc1]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.GetEmailsAsync("acc-1", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -90,20 +89,19 @@ public class GetEmailsToolTests
     }
 
     [TestMethod]
-    public async Task GetEmails_NoAccounts_ThrowsMcpException()
+    public async Task GetEmails_NoAccounts_ReturnsEmptyWithWarning()
     {
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([]);
 
+        // No GetProvider setup: no provider may be resolved when there are no accounts.
         var factExp = new IProviderServiceFactoryCreateExpectations();
         var tool = new GetEmailsTool(regExp.Instance(), factExp.Instance(),
             NullLogger<GetEmailsTool>.Instance);
 
-        var ex = await Assert.ThrowsExactlyAsync<McpException>(
-            () => tool.GetEmails());
-        Assert.AreEqual("No accounts found", ex.Message);
+        NoAccountsAssert.IsEmptyWithWarning(await tool.GetEmails(), "emails");
         regExp.Verify();
+        factExp.Verify();
     }
 
     [TestMethod]
@@ -115,8 +113,7 @@ public class GetEmailsToolTests
         var emails = new List<EmailMessage> { TestData.CreateEmail(id: "e1", accountId: "acc-ok") };
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([okAccount, staleAccount]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([okAccount, staleAccount]);
 
         var okProvExp = new IProviderServiceCreateExpectations();
         okProvExp.Setups.GetEmailsAsync("acc-ok", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())

@@ -19,7 +19,14 @@ public sealed partial class GetContextualEmailSummaryTool(
     IProviderServiceFactory providerFactory,
     ILogger<GetContextualEmailSummaryTool> logger)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    // camelCase, as documented (docs/mcp-tools.md) and as every other tool emits; the summary
+    // models are PascalCase C# types, so without a policy they serialized as TotalEmails,
+    // Warnings[].AccountId and so on.
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
     
     // Common topic keywords for clustering
     private static readonly Dictionary<string, string[]> TopicKeywords = new(StringComparer.OrdinalIgnoreCase)
@@ -47,10 +54,20 @@ public sealed partial class GetContextualEmailSummaryTool(
             "Getting contextual email summary: topics={Topics}, countPerAccount={Count}, unreadOnly={UnreadOnly}",
             topics, countPerAccount, unreadOnly);
 
-        // Get all enabled accounts
-        var accounts = (await accountRegistry.GetAllAccountsAsync()).ToList();
+        var noAccountsWarnings = new List<object>();
+        var accounts = ToolGuard.GetFanOutAccounts(accountRegistry, noAccountsWarnings);
         if (accounts.Count == 0)
-            throw new McpException("No accounts configured");
+        {
+            // Same payload as "no emails found" below, so the caller sees an empty summary plus
+            // a warning saying how to add an account, rather than an error.
+            return JsonSerializer.Serialize(new
+            {
+                message = "No emails found matching criteria",
+                searchKeywords = ParseTopics(topics),
+                accountsSearched = 0,
+                warnings = noAccountsWarnings
+            }, JsonOptions);
+        }
 
         accounts = ToolGuard.FilterByPermission(
             accounts, AccountPermission.EmailRead, logger, "get_contextual_email_summary");

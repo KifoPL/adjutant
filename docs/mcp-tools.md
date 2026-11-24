@@ -9,9 +9,12 @@ Adjutant exposes tools through the Model Context Protocol (MCP) that AI assistan
 ### Account Management
 
 #### `list_accounts`
-Get list of all configured accounts across all providers, with what each one allows.
+Get list of all enabled accounts across all providers, with what each one allows. Disabled
+accounts are left out, matching the fan-out tools, which never query them.
 
-**Parameters**: None
+**Parameters**:
+- `includeDisabled` (default: false): Also list disabled accounts. Every entry carries `enabled`,
+  so the two can be told apart.
 
 **Returns**:
 ```json
@@ -22,6 +25,7 @@ Get list of all configured accounts across all providers, with what each one all
       "provider": "microsoft365",
       "displayName": "Work Account",
       "domains": ["example.com"],
+      "enabled": true,
       "capabilities": [
         { "name": "calendar", "readOnly": false },
         { "name": "email", "readOnly": true }
@@ -65,12 +69,20 @@ Two behaviours differ by how the account was chosen:
   account *does* permit, so the caller can pick a different one. `get_calendar_events` is the
   exception: it returns an empty result with a warning, matching how it already handles
   email-only accounts.
-- **Fan-out** (`accountId` omitted) — accounts lacking the permission are silently skipped; the
-  caller asked for "all accounts", and a scoped-out account isn't part of that set. If nothing
-  qualifies, the tool errors with `No accounts permit ...`.
+- **Fan-out** (`accountId` omitted) — only enabled accounts are queried, and those lacking the
+  permission are silently skipped; the caller asked for "all accounts", and a scoped-out account
+  isn't part of that set. If enabled accounts exist but none qualify, the email and contacts
+  tools error with `No accounts permit ...`, while `list_calendars` and `get_calendar_events`
+  return an empty result with one `warnings` entry carrying the same text. If the server has no
+  enabled accounts at all, the tool returns an empty result plus a `warnings` entry (see
+  [No accounts configured](#no-accounts-configured)).
 
 Smart routing (`send_email`, `create_event`, `create_contact`, `delete_event`,
-`respond_to_event`) only ever selects accounts that permit the operation.
+`respond_to_event`) only ever selects enabled accounts that permit the operation.
+
+A **disabled** account can't be used by any tool. Naming it with `accountId` fails with
+`Account '<id>' is disabled. ...`; in a `bulk_*` tool only the items on that account fail. It is
+also left out of `list_accounts` (unless `includeDisabled` is true), every fan-out and smart routing.
 
 `bulk_*` tools check per item, so one scoped-out account fails only its own entries rather than
 the whole batch.
@@ -898,6 +910,25 @@ The `error` text distinguishes the cases a user can act on:
 Single-item tools (`get_email_details`, `get_calendar_event_details`, `get_contact_details`,
 `get_email_attachment`, …) and write tools return the re-authentication message as their tool
 error. A genuine "not found" (HTTP 404) is still reported as not found.
+
+### No accounts configured
+
+When `accountId` is omitted and the server has no enabled accounts, the same read tools return
+their normal empty result rather than an error, with one `warnings` entry that has no `accountId`:
+
+```json
+{
+  "emails": [],
+  "warnings": [
+    { "warning": "No enabled accounts are configured on this server. Add one in the admin console (HTTP server) or with the CLI (e.g. 'adjutant-cli add-m365-account'), or enable an existing one." }
+  ]
+}
+```
+
+`get_contextual_email_summary` returns its "no emails found" payload (`accountsSearched: 0`) with
+the same warning. `get_calendar_events` given only a `calendarId` returns `events: []` with the
+warning rather than "No calendar found". An explicit `accountId` that doesn't exist is still an
+error.
 
 ## Transport
 

@@ -99,6 +99,12 @@ network errors are reported the same way. Single-item tools
 (`get_email_details`, etc.) return the same re-authentication message as
 their error.
 
+A server with no enabled accounts is reported the same way: an empty
+result plus one entry with no `accountId`,
+`{ "warning": "No enabled accounts are configured on this server. ..." }`.
+Relay it to the user (they need to add an account in the admin console
+on the HTTP server, or with the CLI).
+
 ## Tool errors
 
 When a provider call fails, the error reads `Failed to <action>: <detail>`.

@@ -50,8 +50,7 @@ public class PermissionEnforcementTests
         var denied = Scoped("acc-denied", AccountPermission.CalendarRead);
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([allowed, denied]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([allowed, denied]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.GetEmailsAsync("acc-allowed", Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -79,8 +78,7 @@ public class PermissionEnforcementTests
         var denied = Scoped("acc-denied", AccountPermission.CalendarRead);
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([denied]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([denied]);
 
         var tool = new GetEmailsTool(regExp.Instance(),
             new IProviderServiceFactoryCreateExpectations().Instance(),
@@ -146,8 +144,7 @@ public class PermissionEnforcementTests
 
         var regExp = new IAccountRegistryCreateExpectations();
         regExp.Setups.GetAccountsByDomain("example.com").ReturnValue([readOnlyMatch]);
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([readOnlyMatch, sender]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([readOnlyMatch, sender]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.SendEmailAsync("acc-sender", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
@@ -244,8 +241,7 @@ public class PermissionEnforcementTests
         var writable = TestData.CreateAccount(id: "acc-writable", provider: "google");
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([readOnly, writable]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([readOnly, writable]);
 
         var provExp = new IProviderServiceCreateExpectations();
         provExp.Setups.CreateEventAsync("acc-writable", Arg.Any<string?>(), Arg.Any<string>(),
@@ -296,8 +292,7 @@ public class PermissionEnforcementTests
             permissions: AccountPermissions.All.With(AccountPermission.EmailSend, false));
 
         var regExp = new IAccountRegistryCreateExpectations();
-        regExp.Setups.GetAllAccountsAsync()
-            .ReturnValue(Task.FromResult<IEnumerable<AccountInfo>>([account]));
+        regExp.Setups.GetEnabledAccounts().ReturnValue([account]);
 
         var tool = new ListAccountsTool(regExp.Instance(), NullLogger<ListAccountsTool>.Instance);
 
