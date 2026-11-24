@@ -407,9 +407,24 @@ public sealed class DavProviderService : IDavProviderService
         return VCardMapper.ToContact(get.Body, accountId, contactId, get.Etag, AddressBookName(book));
     }
 
-    public async Task<string> CreateContactAsync(
+    public Task<string> CreateContactAsync(
         string accountId,
         string displayName,
+        string? givenName = null,
+        string? surname = null,
+        List<string>? emailAddresses = null,
+        List<string>? phoneNumbers = null,
+        string? jobTitle = null,
+        string? companyName = null,
+        string? notes = null,
+        CancellationToken cancellationToken = default) =>
+        CreateContactInAddressBookAsync(accountId, displayName, null, givenName, surname,
+            emailAddresses, phoneNumbers, jobTitle, companyName, notes, cancellationToken);
+
+    public async Task<string> CreateContactInAddressBookAsync(
+        string accountId,
+        string displayName,
+        string? addressBookName,
         string? givenName = null,
         string? surname = null,
         List<string>? emailAddresses = null,
@@ -422,7 +437,7 @@ public sealed class DavProviderService : IDavProviderService
         var cfg = await ResolveConfigAsync(accountId);
         EnsureContacts(cfg);
 
-        var book = await GetPrimaryAddressbookAsync(cfg, cancellationToken);
+        var book = await SelectAddressBookAsync(cfg, addressBookName, cancellationToken);
         var uid = Guid.NewGuid().ToString();
         var href = new Uri(book, $"{uid}.vcf");
         var vcard = VCardMapper.ToVCard(uid, displayName, givenName, surname,
@@ -616,12 +631,42 @@ public sealed class DavProviderService : IDavProviderService
         return books;
     }
 
-    private async Task<Uri> GetPrimaryAddressbookAsync(
-        DavAccountConfig cfg, CancellationToken cancellationToken)
+    private async Task<Uri> SelectAddressBookAsync(
+        DavAccountConfig cfg, string? addressBookName, CancellationToken cancellationToken)
     {
         var books = await ListAddressbooksAsync(cfg, cancellationToken);
-        return books.FirstOrDefault(b => b.CanWrite)?.Href
-            ?? throw new InvalidOperationException($"No writable address books found for account '{cfg.AccountId}'.");
+        var name = addressBookName?.Trim();
+        if (string.IsNullOrEmpty(name))
+        {
+            return books.FirstOrDefault(b => b.CanWrite)?.Href
+                ?? throw new InvalidOperationException($"No writable address books found for account '{cfg.AccountId}'.");
+        }
+
+        var matches = books.Where(b => string.Equals(AddressBookName(b), name, StringComparison.OrdinalIgnoreCase)).ToList();
+        // A read-only namesake (e.g. a shared "Contacts") shouldn't block the one writable match.
+        var writable = matches.Where(b => b.CanWrite).ToList();
+        if (writable.Count == 1)
+            return writable[0].Href;
+        if (writable.Count > 1)
+            throw new ProviderOperationException(
+                $"Address book name '{name}' matches {writable.Count} writable address books; rename one to make it unique.");
+
+        var reason = matches.Count == 0 ? "was not found" : "is read-only";
+        throw new ProviderOperationException(
+            $"Address book '{name}' {reason}. {DescribeWritableBooks(books)}");
+    }
+
+    private static string DescribeWritableBooks(IEnumerable<DavPropResponse> books)
+    {
+        var names = books.Where(b => b.CanWrite)
+            .Select(AddressBookName)
+            .OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(n => $"'{n}'")
+            .ToList();
+        return names.Count == 0
+            ? "No writable address book has a name; omit addressBookName to use the default."
+            : $"Writable address books: {string.Join(", ", names)}.";
     }
 
     /// <summary>

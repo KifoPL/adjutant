@@ -59,6 +59,63 @@ public class DavUserJourneyTests
     }
 
     [TestMethod]
+    public async Task ContactCreate_WithAddressBookName_WritesOnlyToSelectedBook()
+    {
+        using var server = new Server();
+        var provider = server.Provider();
+        var id = await provider.CreateContactInAddressBookAsync("a", "Alice", "SECONDARY");
+
+        Assert.IsTrue(DavResourceId.Decode(id).AbsolutePath.StartsWith("/a/book/secondary/"));
+        Assert.AreEqual(1, server.Writes.Count);
+        // The name used to pick the book is the one contact results report back.
+        Assert.AreEqual("secondary", (await provider.GetContactDetailsAsync("a", id))!.AddressBookName);
+        Assert.AreEqual("secondary", (await provider.GetContactsAsync("a")).Single().AddressBookName);
+    }
+
+    [DataTestMethod]
+    [DataRow("unknown", "secondary", "was not found")]
+    [DataRow("ro", "secondary", "is read-only")]
+    [DataRow("rw", "rw", "matches 2 writable")]
+    public async Task ContactCreate_InvalidAddressBook_DoesNotWrite(string book, string secondaryName, string reason)
+    {
+        using var server = new Server { SecondaryBookName = secondaryName };
+        var ex = await Assert.ThrowsExceptionAsync<ProviderOperationException>(
+            () => server.Provider().CreateContactInAddressBookAsync("a", "Alice", book));
+        StringAssert.Contains(ex.Message, reason);
+        Assert.AreEqual(0, server.Writes.Count);
+    }
+
+    [TestMethod]
+    public async Task ContactCreate_UnknownAddressBook_ListsWritableNames()
+    {
+        using var server = new Server();
+        var ex = await Assert.ThrowsExceptionAsync<ProviderOperationException>(
+            () => server.Provider().CreateContactInAddressBookAsync("a", "Alice", "Personal"));
+        StringAssert.Contains(ex.Message, "Writable address books: 'rw', 'secondary'.");
+        Assert.IsFalse(ex.Message.Contains("'ro'"), "read-only books are not offered as targets");
+    }
+
+    [TestMethod]
+    public async Task ContactCreate_ReadOnlyNamesake_WritesToTheWritableBook()
+    {
+        // e.g. the user's own "Contacts" plus a colleague's shared, read-only "Contacts".
+        using var server = new Server { SecondaryBookName = "ro" };
+        var id = await server.Provider().CreateContactInAddressBookAsync("a", "Alice", "RO");
+
+        Assert.IsTrue(DavResourceId.Decode(id).AbsolutePath.StartsWith("/a/book/secondary/"));
+        Assert.AreEqual(1, server.Writes.Count);
+    }
+
+    [TestMethod]
+    public async Task ContactCreate_MatchesServerNamesIgnoringSurroundingWhitespace()
+    {
+        using var server = new Server { SecondaryBookName = " Family " };
+        var id = await server.Provider().CreateContactInAddressBookAsync("a", "Alice", "family");
+
+        Assert.IsTrue(DavResourceId.Decode(id).AbsolutePath.StartsWith("/a/book/secondary/"));
+    }
+
+    [TestMethod]
     public async Task CrossAccountIds_RejectAllDirectResourceOperationsBeforeSendingToForeignPath()
     {
         using var server = new Server();
@@ -324,6 +381,7 @@ public class DavUserJourneyTests
     {
         using var server = new Server { IgnoreEmptyContactFilter = ignoreEmptyFilter };
         server.Names["/a/book/rw/"] = "Family";
+        server.Names["/a/book/ro/"] = null;
         var provider = server.Provider();
         var id = await provider.CreateContactAsync("a", "Alice", emailAddresses: ["alice@example.com"]);
         server.Resources["/a/book/ro/bob.vcf"] = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:bob\r\nFN:Bob\r\nEND:VCARD\r\n";
@@ -345,13 +403,13 @@ public class DavUserJourneyTests
 
         Assert.AreEqual(id, (await provider.GetContactsAsync("a")).Single().Id);
         var first = server.Reports.Where(r => r.Contains("addressbook-query")).ToList();
-        Assert.AreEqual(2, first.Count(r => !r.Contains("prop-filter")), "one plain query per book");
-        Assert.AreEqual(2, first.Count(r => r.Contains("prop-filter")), "one retry per book");
+        Assert.AreEqual(3, first.Count(r => !r.Contains("prop-filter")), "one plain query per book");
+        Assert.AreEqual(3, first.Count(r => r.Contains("prop-filter")), "one retry per book");
 
         server.Reports.Clear();
         Assert.AreEqual(id, (await provider.SearchContactsAsync("a", "alice")).Single().Id);
         var second = server.Reports.Where(r => r.Contains("addressbook-query")).ToList();
-        Assert.AreEqual(2, second.Count, "goes straight to the property filter once learned");
+        Assert.AreEqual(3, second.Count, "goes straight to the property filter once learned");
         Assert.IsTrue(second.All(r => r.Contains("prop-filter")));
     }
 
@@ -366,8 +424,8 @@ public class DavUserJourneyTests
         Assert.AreEqual(1, (await provider.GetContactsAsync("a")).Count());
         Assert.AreEqual(1, (await provider.GetContactsAsync("a")).Count());
         var queries = server.Reports.Where(r => r.Contains("addressbook-query")).ToList();
-        Assert.AreEqual(4, queries.Count);
-        Assert.IsFalse(queries.Any(r => r.Contains("prop-filter")), "the empty ro/ book must not trigger a retry");
+        Assert.AreEqual(6, queries.Count, "three books, two calls, no retries");
+        Assert.IsFalse(queries.Any(r => r.Contains("prop-filter")), "the empty books must not trigger a retry");
     }
 
     [TestMethod]
@@ -400,6 +458,7 @@ public class DavUserJourneyTests
     private sealed class Server : HttpMessageHandler, IHttpClientFactory, IAccountRegistry
     {
         public bool ReadOnly, Shared, Discover, FailWrites;
+        public string SecondaryBookName = "secondary"; // displayname of the third, writable address book
         // CardDAV quirks: Synology-style empty multistatus for <c:filter/>, or a server that rejects prop-filter.
         public bool IgnoreEmptyContactFilter, RejectPropertyFilter;
         public string Home = "/a/cal/";
@@ -410,7 +469,7 @@ public class DavUserJourneyTests
             ["calendarHomeSet"] = "https://dav.example/a/cal/", ["addressbookHomeSet"] = "https://dav.example/a/book/"
         });
         public Dictionary<string, string> Resources = new();
-        public Dictionary<string, string> Names = new(); // collection path -> DAV:displayname
+        public Dictionary<string, string?> Names = new(); // collection path -> DAV:displayname (null = unnamed)
         public List<string> RequestPaths = [], RequestMethods = [], Reports = [];
         public List<(string? ContentType, string? IfMatch)> Writes = [];
         public CaptureLogger Log = new();
@@ -436,7 +495,10 @@ public class DavUserJourneyTests
                 if (body.Contains("calendar-home-set")) return Xml($"<d:response><d:href>/principal/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>{Home}</d:href></c:calendar-home-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>");
                 var book = path.Contains("book");
                 var writable = Shared && !book ? "/shared/cal/" : path + "rw/";
-                return Xml(Collection(path + "ro/", book, false) + Collection(writable, book, !ReadOnly));
+                var collections = Collection(path + "ro/", book, false) + Collection(writable, book, !ReadOnly);
+                if (book)
+                    collections += Collection(path + "secondary/", true, !ReadOnly, SecondaryBookName);
+                return Xml(collections);
             }
             if (request.Method.Method == "REPORT")
             {
@@ -467,12 +529,15 @@ public class DavUserJourneyTests
             }
             return new(HttpStatusCode.NotFound);
         }
-        private string Collection(string path, bool book, bool write)
+        private string Collection(string path, bool book, bool write, string? defaultName = null)
         {
-            // Named collections get a displayname; unnamed ones report it in a 404 propstat, as real servers do.
-            var named = Names.TryGetValue(path, out var name);
-            var displayName = named ? $"<d:displayname>{name}</d:displayname>" : string.Empty;
-            var missing = named ? string.Empty : "<d:propstat><d:prop><d:displayname/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>";
+            // Names[path] overrides the default (the given name, else the last path segment);
+            // a null entry makes the collection unnamed, reported in a 404 propstat as real servers do.
+            var name = Names.TryGetValue(path, out var overrideName)
+                ? overrideName
+                : defaultName ?? path.TrimEnd('/').Split('/').Last();
+            var displayName = name is null ? string.Empty : $"<d:displayname>{name}</d:displayname>";
+            var missing = name is null ? "<d:propstat><d:prop><d:displayname/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>" : string.Empty;
             return $"<d:response><d:href>{path}</d:href>{missing}<d:propstat><d:prop>{displayName}<d:resourcetype><{(book ? "a:addressbook" : "c:calendar")}/></d:resourcetype><d:current-user-privilege-set><d:privilege><d:{(write ? "write" : "read")}/></d:privilege></d:current-user-privilege-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>";
         }
         private static HttpResponseMessage Xml(string body) => new(HttpStatusCode.MultiStatus) { Content = new StringContent($"<d:multistatus xmlns:d='DAV:' xmlns:c='urn:ietf:params:xml:ns:caldav' xmlns:a='urn:ietf:params:xml:ns:carddav'>{body}</d:multistatus>") };
