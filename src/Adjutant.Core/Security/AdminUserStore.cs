@@ -61,6 +61,18 @@ public sealed class AdminUserStore : IAdminUserStore
         }
     }
 
+    public bool HasRecordedSignIn(IEnumerable<string> providers)
+    {
+        var schemes = providers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (schemes.Count == 0)
+            return false;
+
+        lock (_gate)
+        {
+            return _users.Any(u => schemes.Contains(u.Provider));
+        }
+    }
+
     public AdminUser? Find(string? email)
     {
         var normalized = AdminEmailAllowList.Normalize(email);
