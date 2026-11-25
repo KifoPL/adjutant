@@ -675,7 +675,8 @@ on, the server refuses to start rather than leak keys in clear text. Terminate T
 the server (a Tailscale Funnel endpoint already does).
 
 The `/health` and `/health/ready` probes stay anonymous, and the `/admin` API continues to use
-`ADJUTANT_ADMIN_TOKEN` — see [Security](security.md).
+the admin token (`ADJUTANT_ADMIN_TOKEN`, or the one generated at first start); see
+[The admin token](#the-admin-token) and [Security](security.md).
 
 #### Connecting a client
 
@@ -874,13 +875,42 @@ been recorded, `AllowTokenLogin` resolves to `false` from then on, and any open 
 The code on its own grants nothing — it is only accepted alongside an identity a provider has
 already verified. Codes are case-insensitive and the dashes are optional.
 
+#### The admin token
+
+The admin token is the credential for the admin REST API (`/admin/*`) and, while token login is
+allowed, for the console login page. There is always one:
+
+- **Configured:** `ADJUTANT_ADMIN_TOKEN` (or `Adjutant:AdminToken` in `appsettings.json`). A
+  configured token always wins, and a change to `Adjutant:AdminToken` applies without a restart.
+- **Generated:** with none configured, the server generates a token at first start, stores only
+  its SHA-256 in `admin-token.json` in the data directory, and prints it once in the startup log:
+
+```
+====================================================================
+No admin token was configured, so one has been generated for you.
+Copy it now - it is hashed at rest and will never be shown again.
+    Admin token: adjadm_...
+====================================================================
+```
+
+The token line goes to standard output only. With Docker, read it with
+`docker compose logs adjutant`; on Kubernetes, `kubectl logs`. It is not written to the log files
+in `{data}/logs` or sent to an OpenTelemetry exporter; those show a placeholder.
+
+If you lose it, delete `admin-token.json` from the data directory and restart for a new one, or set
+`ADJUTANT_ADMIN_TOKEN`. Either way, console sessions opened with the old token end. Setting a
+token also deletes `admin-token.json` at the next start. If you later remove the configured token,
+restart: a new token is generated only at startup, and until then the admin API accepts none.
+There is no mode that runs the admin API without a token.
+
 #### Bootstrapping with no provider yet
 
 There is a chicken-and-egg problem: configuring a provider through the console requires signing
 in. The admin token is the way through it, and it is available as a login until a provider
 sign-in has actually worked:
 
-1. Start the server with `ADJUTANT_ADMIN_TOKEN` set and sign in with it.
+1. Sign in with the admin token: `ADJUTANT_ADMIN_TOKEN` if you set one, otherwise the token
+   printed in the startup log (see above).
 2. Go to **Settings → Sign-in providers**. The page shows the exact redirect URI to register
    with the provider, built from `ExternalBaseUrl`.
 3. Paste in the Authority, Client ID, and Client secret, and save. It takes effect immediately —

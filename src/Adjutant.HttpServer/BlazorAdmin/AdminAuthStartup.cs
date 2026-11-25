@@ -1,5 +1,6 @@
 using Adjutant.Core.Configuration;
 using Adjutant.Core.Security;
+using Adjutant.HttpServer.Security;
 using Microsoft.Extensions.Options;
 
 namespace Adjutant.HttpServer.BlazorAdmin;
@@ -17,6 +18,8 @@ public static class AdminAuthStartup
     {
         var config = app.Services.GetRequiredService<IOptionsMonitor<AdminAuthConfiguration>>().CurrentValue;
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Adjutant.AdminAuth");
+
+        EnsureAdminToken(app.Services.GetRequiredService<IAdminTokenStore>(), logger, Console.Out);
 
         var providers = config.ConfiguredProviderSchemes().ToList();
         if (providers.Count > 0)
@@ -53,6 +56,44 @@ public static class AdminAuthStartup
         logger.LogWarning("    Claim code: {Code}", code);
         logger.LogWarning("It is single-use, also written to {File} in the data directory,", AdminClaimCodeService.FileName);
         logger.LogWarning("and a new one is issued each time the server starts unclaimed.");
+        logger.LogWarning("========================================================================");
+    }
+
+    /// <summary>
+    /// Makes sure the admin API and console token login have a token before the server listens,
+    /// generating one on a first start the way <c>ConfigureMcpProtection</c> does for the MCP key.
+    /// </summary>
+    public static void EnsureAdminToken(IAdminTokenStore tokens, ILogger logger, TextWriter console)
+    {
+        // Always called, even with a configured token: that is when a retired generated token
+        // is deleted from the data directory.
+        var secret = tokens.EnsureToken();
+
+        if (tokens.IsConfigured)
+        {
+            logger.LogInformation(
+                "Admin token: configured (ADJUTANT_ADMIN_TOKEN or Adjutant:AdminToken). If you remove it, " +
+                "restart the server: a new token is generated only at startup.");
+            return;
+        }
+
+        if (secret is null)
+        {
+            logger.LogInformation(
+                "Admin token: the one generated at first start ({File} in the data directory). To replace it, " +
+                "set ADJUTANT_ADMIN_TOKEN, or delete {File} and restart for a new one.",
+                AdminTokenStore.FileName, AdminTokenStore.FileName);
+            return;
+        }
+
+        logger.LogWarning("========================================================================");
+        logger.LogWarning("No admin token was configured, so one has been generated for you.");
+        logger.LogWarning("Copy it now - it is hashed at rest and will never be shown again.");
+        StartupSecrets.Show(logger, console, "Admin token", secret);
+        logger.LogWarning("Use it to sign in to the admin console (/admin/ui) and as");
+        logger.LogWarning("'Authorization: Bearer <token>' on the admin API (/admin).");
+        logger.LogWarning("Lost it? Delete {File} from the data directory and restart,", AdminTokenStore.FileName);
+        logger.LogWarning("or set ADJUTANT_ADMIN_TOKEN, which always takes precedence.");
         logger.LogWarning("========================================================================");
     }
 }
