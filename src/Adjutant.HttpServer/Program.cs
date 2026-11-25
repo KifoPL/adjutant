@@ -58,34 +58,44 @@ public class Program
 
         var builder = WebApplication.CreateBuilder(args);
 
+        // Where to listen, as given by ASPNETCORE_URLS / --urls / ASPNETCORE_HTTP(S)_PORTS. Read
+        // before the default sources are cleared, because that is where these settings live.
+        var hostUrls = builder.WebHost.GetSetting(WebHostDefaults.ServerUrlsKey);
+        var hostHttpPorts = builder.WebHost.GetSetting(WebHostDefaults.HttpPortsKey);
+        var hostHttpsPorts = builder.WebHost.GetSetting(WebHostDefaults.HttpsPortsKey);
+
         // Clear default configuration and load from shared location
         builder.Configuration.Sources.Clear();
 
-        if (File.Exists(configPath))
-        {
-            builder.Configuration.AddJsonFile(configPath, optional: false, reloadOnChange: true);
-            Log.Information("Loaded configuration from {ConfigPath}", configPath);
-        }
-        else
-        {
-            // Fallback: try application directory (for development)
-            var appConfigPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-            if (File.Exists(appConfigPath))
-            {
-                builder.Configuration.AddJsonFile(appConfigPath, optional: false, reloadOnChange: true);
-                Log.Information("Loaded configuration from application directory: {ConfigPath}", appConfigPath);
-            }
-            else
-            {
-                Log.Warning("No appsettings.json found. Expected at: {UserConfigPath} or {AppConfigPath}",
-                    configPath, appConfigPath);
-            }
-        }
+        // Shipped defaults from the application directory, then the operator's settings from the
+        // data directory. The data file is watched even before it exists, so the first save from
+        // the admin console takes effect without a restart.
+        var appConfigPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        var loadedFiles = ServerConfigurationSources.AddSettingsFiles(builder.Configuration, configPath, appConfigPath);
+        Log.Information(
+            "Configuration: shipped defaults {AppConfigPath} ({AppConfigState}), settings {ConfigPath} ({ConfigState}, watched for changes)",
+            appConfigPath, loadedFiles.Contains(appConfigPath) ? "loaded" : "not found",
+            configPath, loadedFiles.Contains(configPath) ? "loaded" : "not created yet");
 
         // Add environment variables (can override file settings). Pre-rename CALENDAR_MCP_
         // variables still apply; ADJUTANT_ ones are added last so they win.
         builder.Configuration.AddInMemoryCollection(LegacyNames.GetEnvironmentSettings());
         builder.Configuration.AddEnvironmentVariables(AdjutantConfiguration.EnvironmentPrefix);
+
+        // Clearing the sources dropped the port settings above; put them back so they keep working.
+        if (!string.IsNullOrWhiteSpace(hostHttpPorts))
+            builder.WebHost.UseSetting(WebHostDefaults.HttpPortsKey, hostHttpPorts);
+        if (!string.IsNullOrWhiteSpace(hostHttpsPorts))
+            builder.WebHost.UseSetting(WebHostDefaults.HttpsPortsKey, hostHttpsPorts);
+
+        // With no address configured anywhere, listen on localhost only rather than Kestrel's
+        // localhost:5000 default (see ServerConfigurationSources.DefaultUrlWhenUnconfigured).
+        if (ServerConfigurationSources.DefaultUrlWhenUnconfigured(
+                hostUrls, hostHttpPorts, hostHttpsPorts,
+                builder.Configuration.GetSection("Kestrel:Endpoints").GetChildren().Any()) is { } defaultUrl)
+        {
+            builder.WebHost.UseUrls(defaultUrl);
+        }
 
         // Configure logging - always use Serilog, add OTEL if endpoint is available
         builder.Host.UseSerilog();
