@@ -1,3 +1,4 @@
+using Adjutant.Core.Providers;
 using Adjutant.Core.Providers.Dav;
 using Adjutant.Core.Services;
 
@@ -208,6 +209,80 @@ public class IcalMapperTests
         Assert.AreEqual("ann@example.com", contact.EmailAddresses.Single().Address);
         Assert.AreEqual("+1 555 0100", contact.PhoneNumbers.Single().Number);
         Assert.AreEqual("1 Main St", contact.Addresses.Single().Street);
+    }
+
+    [TestMethod]
+    public void CreateRecurringEvent_WritesTheRule()
+    {
+        var ics = IcalMapper.BuildNewEventIcs("r", "Standup", new DateTime(2026, 12, 1, 9, 0, 0),
+            new DateTime(2026, 12, 1, 9, 15, 0), null, null, null, "Europe/Warsaw",
+            recurrence: RecurrenceRule.Parse("FREQ=WEEKLY;BYDAY=TU,TH;COUNT=6"));
+
+        var rule = IcalMapper.LoadCalendar(ics)!.Events.Single().RecurrenceRules.Single();
+        Assert.AreEqual(6, rule.Count);
+        Assert.AreEqual(2, rule.ByDay.Count);
+    }
+
+    [TestMethod]
+    public void Update_SetsAndClearsTheDescription()
+    {
+        var described = IcalMapper.ApplyUpdates(CreateEvent(false), null, null, null, null, null, null, body: "Agenda: budget");
+        Assert.AreEqual("Agenda: budget", IcalMapper.LoadCalendar(described)!.Events.Single().Description);
+
+        var cleared = IcalMapper.ApplyUpdates(described, null, null, null, null, null, null, body: "");
+        Assert.IsTrue(string.IsNullOrEmpty(IcalMapper.LoadCalendar(cleared)!.Events.Single().Description));
+    }
+
+    [TestMethod]
+    public void Update_ReplacingTheRuleDropsTheOldSeriesDatesAndOverrides()
+    {
+        var ics = SeriesWithOverride.Replace("RRULE:FREQ=DAILY;COUNT=5\r\n",
+            "RRULE:FREQ=DAILY;COUNT=5\r\nEXDATE:20261006T150000Z\r\n");
+
+        var updated = IcalMapper.ApplyUpdates(ics, null, null, null, null, null, null,
+            recurrence: RecurrenceRule.Parse("FREQ=WEEKLY;BYDAY=MO"));
+
+        var calendar = IcalMapper.LoadCalendar(updated)!;
+        var master = calendar.Events.Single();
+        Assert.AreEqual(Ical.Net.FrequencyType.Weekly, master.RecurrenceRules.Single().Frequency);
+        Assert.AreEqual(0, master.ExceptionDates.Count);
+    }
+
+    [TestMethod]
+    public void Update_DateOnlyUntilOnATimedEventIsWrittenInUtc()
+    {
+        var updated = IcalMapper.ApplyUpdates(CreateEvent(false), null, null, null, null, null, null,
+            recurrence: RecurrenceRule.Parse("FREQ=DAILY;UNTIL=20261031"));
+
+        // The event is in Europe/Warsaw (UTC+1 on Oct 31).
+        StringAssert.Contains(updated, "UNTIL=20261031T225959Z");
+    }
+
+    [TestMethod]
+    public void Update_ClearingRecurrenceLeavesOneSingleEvent()
+    {
+        var updated = IcalMapper.ApplyUpdates(SeriesWithOverride, null, null, null, null, null, null,
+            recurrence: RecurrenceChange.Clear);
+
+        var events = IcalMapper.LoadCalendar(updated)!.Events;
+        Assert.AreEqual(1, events.Count, "the overridden occurrence must go with the series");
+        Assert.AreEqual(0, events.Single().RecurrenceRules.Count);
+        Assert.IsFalse(updated.Contains("RRULE", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Update_AttendeesAlreadyInvitedKeepTheirReply()
+    {
+        var invited = IcalMapper.BuildNewEventIcs("a", "Sync", new DateTime(2026, 12, 1, 9, 0, 0),
+            new DateTime(2026, 12, 1, 10, 0, 0), null, ["al@example.com"], null, "Europe/Warsaw");
+        var replied = IcalMapper.ApplyPartStat(invited, "al@example.com", "accept");
+
+        var updated = IcalMapper.ApplyUpdates(replied, null, null, null, null, ["AL@example.com", "bo@example.com"], null);
+
+        var attendees = IcalMapper.LoadCalendar(updated)!.Events.Single().Attendees;
+        Assert.AreEqual(2, attendees.Count);
+        Assert.AreEqual("ACCEPTED", attendees.Single(a => a.Value.ToString().Contains("al@", StringComparison.OrdinalIgnoreCase)).ParticipationStatus);
+        Assert.AreEqual("NEEDS-ACTION", attendees.Single(a => a.Value.ToString().Contains("bo@", StringComparison.Ordinal)).ParticipationStatus);
     }
 
     private const string SeriesWithOverride =

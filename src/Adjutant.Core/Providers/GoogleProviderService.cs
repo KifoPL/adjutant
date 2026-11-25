@@ -834,7 +834,7 @@ public class GoogleProviderService : IGoogleProviderService
         }
     }
 
-    public async Task<string> CreateEventAsync(
+    public async Task<EventWriteResult> CreateEventAsync(
         string accountId,
         string? calendarId,
         string subject,
@@ -845,8 +845,11 @@ public class GoogleProviderService : IGoogleProviderService
         string? body = null,
         string? timeZone = null,
         bool isAllDay = false,
+        string? recurrence = null,
+        bool notifyAttendees = true,
         CancellationToken cancellationToken = default)
     {
+        var change = RecurrenceRule.Parse(recurrence);
         var credential = await GetCredentialAsync(accountId, cancellationToken);
 
         try
@@ -864,18 +867,21 @@ public class GoogleProviderService : IGoogleProviderService
             };
 
             if (attendees != null && attendees.Count > 0)
-            {
-                newEvent.Attendees = attendees.Select(email => new Google.Apis.Calendar.v3.Data.EventAttendee
-                {
-                    Email = email.Trim()
-                }).ToList();
-            }
+                newEvent.Attendees = MergeAttendees(null, attendees);
+
+            if (change is { IsClear: false })
+                newEvent.Recurrence = ApplyRecurrence(null, change, !isAllDay, timeZone);
 
             var request = service.Events.Insert(newEvent, targetCalendarId);
+            // Google's default is to email no one, so invitations must be asked for.
+            request.SendUpdates = notifyAttendees
+                ? EventsResource.InsertRequest.SendUpdatesEnum.All
+                : EventsResource.InsertRequest.SendUpdatesEnum.None;
             var createdEvent = await request.ExecuteAsync(cancellationToken);
 
             _logger.LogInformation("Created event {EventId} in Google account {AccountId}", createdEvent.Id, accountId);
-            return createdEvent.Id;
+            return new EventWriteResult(createdEvent.Id,
+                AttendeeNotifications.For(notifyAttendees, AttendeeNotifications.AnyIn(attendees)));
         }
         catch (Exception ex)
         {
@@ -884,7 +890,7 @@ public class GoogleProviderService : IGoogleProviderService
         }
     }
 
-    public async Task UpdateEventAsync(
+    public async Task<EventWriteResult> UpdateEventAsync(
         string accountId,
         string calendarId,
         string eventId,
@@ -895,8 +901,12 @@ public class GoogleProviderService : IGoogleProviderService
         List<string>? attendees = null,
         string? timeZone = null,
         bool? isAllDay = null,
+        string? body = null,
+        string? recurrence = null,
+        bool notifyAttendees = true,
         CancellationToken cancellationToken = default)
     {
+        var change = RecurrenceRule.Parse(recurrence);
         var credential = await GetCredentialAsync(accountId, cancellationToken);
 
         try
@@ -904,16 +914,29 @@ public class GoogleProviderService : IGoogleProviderService
             var service = CreateCalendarService(credential);
 
             // First, get the existing event
+            var targetId = eventId;
             var existingEvent = await service.Events.Get(calendarId, eventId).ExecuteAsync(cancellationToken);
+
+            // Recurrence lives on the series; an instance id (what get_calendar_events lists for
+            // a recurring event) can't carry one, so the whole change goes to the series.
+            if (change is not null && !string.IsNullOrEmpty(existingEvent.RecurringEventId))
+            {
+                targetId = existingEvent.RecurringEventId;
+                existingEvent = await service.Events.Get(calendarId, targetId).ExecuteAsync(cancellationToken);
+            }
 
             // Update fields
             if (!string.IsNullOrEmpty(subject))
             {
                 existingEvent.Summary = subject;
             }
-            if (!string.IsNullOrEmpty(location))
+            if (location is not null)
             {
                 existingEvent.Location = location;
+            }
+            if (body is not null)
+            {
+                existingEvent.Description = body;
             }
             // Replacing the whole EventDateTime switches between date (all-day) and dateTime.
             if (start.HasValue)
@@ -926,16 +949,26 @@ public class GoogleProviderService : IGoogleProviderService
             }
             if (attendees != null)
             {
-                existingEvent.Attendees = attendees.Select(email => new Google.Apis.Calendar.v3.Data.EventAttendee
-                {
-                    Email = email.Trim()
-                }).ToList();
+                existingEvent.Attendees = MergeAttendees(existingEvent.Attendees, attendees);
+            }
+            // After the times, so the rule matches whether the event is now timed or all-day.
+            if (change is not null)
+            {
+                FillMissingTimeZones(existingEvent, change, timeZone);
+                existingEvent.Recurrence = ApplyRecurrence(existingEvent.Recurrence, change,
+                    existingEvent.Start?.Date is null, timeZone ?? existingEvent.Start?.TimeZone);
             }
 
-            var request = service.Events.Update(existingEvent, calendarId, eventId);
+            var request = service.Events.Update(existingEvent, calendarId, targetId);
+            // Google's default is to email no one, so updates must be asked for.
+            request.SendUpdates = notifyAttendees
+                ? EventsResource.UpdateRequest.SendUpdatesEnum.All
+                : EventsResource.UpdateRequest.SendUpdatesEnum.None;
             await request.ExecuteAsync(cancellationToken);
 
-            _logger.LogInformation("Updated event {EventId} in Google account {AccountId}", eventId, accountId);
+            _logger.LogInformation("Updated event {EventId} in Google account {AccountId}", targetId, accountId);
+            return new EventWriteResult(targetId,
+                AttendeeNotifications.For(notifyAttendees, existingEvent.Attendees?.Count > 0));
         }
         catch (Exception ex)
         {
@@ -1664,6 +1697,52 @@ public class GoogleProviderService : IGoogleProviderService
             
         return providerName.ToLowerInvariant().Replace(" ", "");
     }
+
+    /// <summary>
+    /// The event's new <c>recurrence</c> lines. A new rule replaces any RRULE/EXRULE lines and
+    /// keeps EXDATE/RDATE lines (skipped or added dates). Clearing removes every line; it is
+    /// an empty list, not null, so the full-resource update sends it.
+    /// </summary>
+    internal static List<string> ApplyRecurrence(IList<string>? existing, RecurrenceChange change,
+        bool timedEvent = false, string? timeZone = null)
+    {
+        if (change.IsClear)
+            return [];
+
+        var kept = (existing ?? [])
+            .Where(line => !line.StartsWith("RRULE:", StringComparison.OrdinalIgnoreCase)
+                && !line.StartsWith("EXRULE:", StringComparison.OrdinalIgnoreCase));
+        return [$"RRULE:{RecurrenceRule.RuleFor(change, timedEvent, timeZone)}", .. kept];
+    }
+
+    /// <summary>
+    /// Google requires start/end <c>timeZone</c> on a recurring timed event, but a one-off event can
+    /// have offset-bearing times without one. Labels them with <paramref name="timeZone"/>; the
+    /// offset still fixes the instant, so the meeting doesn't move.
+    /// </summary>
+    internal static void FillMissingTimeZones(Event evt, RecurrenceChange change, string? timeZone)
+    {
+        if (change.IsClear || string.IsNullOrWhiteSpace(timeZone))
+            return;
+        foreach (var boundary in new[] { evt.Start, evt.End })
+        {
+            if (boundary is { Date: null } && string.IsNullOrEmpty(boundary.TimeZone))
+                boundary.TimeZone = timeZone;
+        }
+    }
+
+    /// <summary>
+    /// The attendee list for <paramref name="emails"/>, reusing existing entries (matched by
+    /// address, case-insensitively) so attendees already invited keep their response.
+    /// </summary>
+    internal static List<Google.Apis.Calendar.v3.Data.EventAttendee> MergeAttendees(IList<Google.Apis.Calendar.v3.Data.EventAttendee>? existing, IEnumerable<string> emails) =>
+        emails
+            .Where(email => !string.IsNullOrWhiteSpace(email))
+            .Select(email => email.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(email => existing?.FirstOrDefault(a => string.Equals(a.Email, email, StringComparison.OrdinalIgnoreCase))
+                ?? new Google.Apis.Calendar.v3.Data.EventAttendee { Email = email })
+            .ToList();
 
     private static string? FormatGoogleRecurrence(IList<string>? recurrence)
     {
