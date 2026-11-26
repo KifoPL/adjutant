@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Adjutant.Core.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -16,19 +17,22 @@ public sealed class InMemoryAttachmentStore : IAttachmentStore
     private readonly AttachmentStoreOptions _options;
     private readonly ILogger<InMemoryAttachmentStore> _logger;
     private readonly TimeProvider _time;
+    private readonly IMcpCallerContextAccessor? _callerContext;
     private long _totalBytes;
 
     public InMemoryAttachmentStore(
         IOptions<AttachmentStoreOptions> options,
         ILogger<InMemoryAttachmentStore> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IMcpCallerContextAccessor? callerContext = null)
     {
         _options = options.Value;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
+        _callerContext = callerContext;
     }
 
-    public StoredAttachment? Put(string name, string? contentType, byte[] bytes)
+    public StoredAttachment? Put(string name, string? contentType, byte[] bytes, string? sourceAccountId = null)
     {
         ArgumentNullException.ThrowIfNull(bytes);
         if (bytes.Length > _options.MaxBytesPerAttachment)
@@ -42,6 +46,7 @@ public sealed class InMemoryAttachmentStore : IAttachmentStore
             Id = id,
             Name = string.IsNullOrWhiteSpace(name) ? "attachment" : name,
             ContentType = contentType,
+            SourceAccountId = sourceAccountId,
             Bytes = bytes,
             ExpiresAt = _time.GetUtcNow().Add(_options.Ttl),
         };
@@ -69,7 +74,7 @@ public sealed class InMemoryAttachmentStore : IAttachmentStore
 
         lock (_gate)
         {
-            if (!_entries.TryGetValue(attachmentId, out var entry))
+            if (!_entries.TryGetValue(attachmentId, out var entry) || !CanAccess(entry))
                 return null;
 
             _entries.Remove(attachmentId);
@@ -92,7 +97,7 @@ public sealed class InMemoryAttachmentStore : IAttachmentStore
 
         lock (_gate)
         {
-            if (!_entries.TryGetValue(attachmentId, out var entry))
+            if (!_entries.TryGetValue(attachmentId, out var entry) || !CanAccess(entry))
                 return null;
 
             if (entry.ExpiresAt <= _time.GetUtcNow())
@@ -114,12 +119,17 @@ public sealed class InMemoryAttachmentStore : IAttachmentStore
 
         lock (_gate)
         {
-            if (!_entries.Remove(attachmentId, out var entry))
+            if (!_entries.TryGetValue(attachmentId, out var entry) || !CanAccess(entry))
                 return false;
+            _entries.Remove(attachmentId);
             _totalBytes -= entry.Bytes.Length;
             return true;
         }
     }
+
+    private bool CanAccess(StoredAttachment entry) =>
+        entry.SourceAccountId is not { } sourceAccountId ||
+        (_callerContext?.Current ?? McpCallerContext.Unrestricted).AllowsAccount(sourceAccountId);
 
     public void EvictExpired()
     {

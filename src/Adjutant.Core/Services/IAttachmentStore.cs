@@ -9,20 +9,21 @@ public interface IAttachmentStore
 {
     /// <summary>
     /// Stores <paramref name="bytes"/> under a freshly generated ID.
+    /// Attachments fetched from an account retain its ID for later access checks.
     /// Returns <c>null</c> if the global byte budget would be exceeded.
     /// </summary>
-    StoredAttachment? Put(string name, string? contentType, byte[] bytes);
+    StoredAttachment? Put(string name, string? contentType, byte[] bytes, string? sourceAccountId = null);
 
     /// <summary>
     /// Atomically removes and returns the entry. Returns <c>null</c> if the
-    /// ID is unknown or already expired. Use this for single-use consumption
+    /// ID is unknown, expired, or outside the caller's account scope. Use this for single-use consumption
     /// paths (e.g. send_email).
     /// </summary>
     StoredAttachment? TryConsume(string attachmentId);
 
     /// <summary>
     /// Returns the entry without removing it. Returns <c>null</c> if the ID
-    /// is unknown or expired. The entry remains in the store until consumed,
+    /// is unknown, expired, or outside the caller's account scope. The entry remains in the store until consumed,
     /// explicitly deleted, or TTL'd out. Use this for the HTTP GET path
     /// where the caller may want to read first and consume later.
     /// </summary>
@@ -30,7 +31,7 @@ public interface IAttachmentStore
 
     /// <summary>
     /// Removes the entry if present. Returns true if removed, false if it
-    /// was already gone (or never existed). No-throw.
+    /// was absent or outside the caller's account scope. No-throw.
     /// </summary>
     bool TryDelete(string attachmentId);
 
@@ -47,6 +48,7 @@ public sealed class StoredAttachment
     public required string Id { get; init; }
     public required string Name { get; init; }
     public string? ContentType { get; init; }
+    public string? SourceAccountId { get; init; }
     public required byte[] Bytes { get; init; }
     public required DateTimeOffset ExpiresAt { get; init; }
 }

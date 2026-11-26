@@ -1,12 +1,17 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Web;
+using Adjutant.Core.Models;
 using Adjutant.Core.Security;
 using Adjutant.HttpServer.Identity;
+using Adjutant.HttpServer.Security;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
+using OpenIddict.Abstractions;
 
 namespace Adjutant.Tests.Identity;
 
@@ -242,6 +247,104 @@ public sealed class McpOAuthIntegrationTests
     }
 
     [TestMethod]
+    public async Task Api_key_scope_applies_to_HTTP_tool_calls()
+    {
+        ConfigureAccounts();
+        var keys = _app.Services.GetRequiredService<IMcpKeyStore>();
+        var (_, scopedKey) = keys.Create("scoped", allowedAccounts: ["mail-A"]);
+        var (_, legacyKey) = keys.Create("unrestricted");
+
+        await using var scoped = await OpenToolClientAsync(scopedKey);
+        await AssertAccountListAsync(scoped, "mail-a");
+        await AssertAccountDeniedAsync(scoped, "get_emails", new() { ["accountId"] = "mail-b" });
+        await AssertAccountDeniedAsync(scoped, "send_email", new()
+        {
+            ["accountId"] = "mail-b", ["to"] = new[] { "recipient@example.com" }, ["subject"] = "test"
+        });
+
+        await using var legacy = await OpenToolClientAsync(legacyKey);
+        await AssertAccountListAsync(legacy, "mail-a", "mail-b", "mail-c");
+    }
+
+    [TestMethod]
+    public async Task OAuth_account_scope_survives_refresh_and_is_separate_per_authorization()
+    {
+        ConfigureAccounts();
+        var first = await ConnectAndGetTokensAsync(["MAIL-A", "mail-c"]);
+        var second = await ConnectAndGetTokensAsync(["mail-b"]);
+        await using var a = await OpenToolClientAsync(first.AccessToken);
+        await using var b = await OpenToolClientAsync(second.AccessToken);
+
+        await AssertAccountListAsync(a, "mail-a", "mail-c");
+        await AssertAccountListAsync(b, "mail-b");
+        await AssertAccountDeniedAsync(a, "search_emails", new() { ["accountId"] = "mail-b", ["query"] = "test" });
+        await AssertAccountDeniedAsync(b, "delete_email", new() { ["accountId"] = "mail-a", ["emailId"] = "test" });
+
+        using var response = await RefreshAsync(first.RefreshToken!);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        await using var refreshed = await OpenToolClientAsync(body.GetProperty("access_token").GetString()!);
+        await AssertAccountListAsync(refreshed, "mail-a", "mail-c");
+
+        await using var scope = _app.Services.CreateAsyncScope();
+        var authorizations = scope.ServiceProvider.GetRequiredService<IOpenIddictAuthorizationManager>();
+        var stored = new List<string>();
+        await foreach (var authorization in authorizations.ListAsync())
+        {
+            var properties = await authorizations.GetPropertiesAsync(authorization);
+            stored.Add(string.Join(",", properties[AuthorizationEndpoint.AllowedAccountsProperty].Deserialize<string[]>()!));
+        }
+        CollectionAssert.AreEquivalent(new[] { "mail-a,mail-c", "mail-b" }, stored);
+    }
+
+    [TestMethod]
+    public async Task An_empty_or_stale_selected_account_scope_is_rejected()
+    {
+        ConfigureAccounts();
+        ServeMetadataDocument();
+        var browser = _app.CreateBrowser();
+        var empty = await browser.AuthorizeAsync(AuthorizationUrl(), AdjutantApp.Owner, allowedAccounts: []);
+        Assert.AreEqual("invalid_request", HttpUtility.ParseQueryString(empty.Query)["error"]);
+
+        var stale = await browser.AuthorizeAsync(AuthorizationUrl(), AdjutantApp.Owner, allowedAccounts: ["mail-a"],
+            beforeApproval: () => _app.UpdateSettings(AdjutantApp.DefaultSettings()));
+        Assert.AreEqual("invalid_request", HttpUtility.ParseQueryString(stale.Query)["error"]);
+    }
+
+    [TestMethod]
+    public async Task Consent_never_reposts_client_supplied_account_selection_fields()
+    {
+        ConfigureAccounts();
+        ServeMetadataDocument();
+        var browser = _app.CreateBrowser();
+        var url = new Uri(AuthorizationUrl() + "&ACCOUNTACCESS=all&ALLOWEDACCOUNTS=mail-b");
+
+        var redirect = await browser.AuthorizeAsync(url, AdjutantApp.Owner, allowedAccounts: []);
+
+        Assert.AreEqual("invalid_request", HttpUtility.ParseQueryString(redirect.Query)["error"]);
+        StringAssert.Contains(browser.ConsentPage, "All accounts, including accounts added later");
+        StringAssert.Contains(browser.ConsentPage, "mail-b");
+        Assert.IsFalse(browser.ConsentPage.Contains("type=\"hidden\" name=\"ALLOWEDACCOUNTS\"", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task A_stale_admin_cookie_cannot_view_the_consent_account_picker()
+    {
+        ConfigureAccounts();
+        ServeMetadataDocument();
+        var browser = _app.CreateBrowser();
+        await browser.Http.GetAsync($"{AdjutantApp.TestSignInPath}?email={AdjutantApp.Owner}");
+        var forwarded = await browser.Http.GetAsync(AuthorizationUrl());
+        var consent = AdjutantApp.Browser.RedirectOf(forwarded);
+        Assert.AreEqual(AuthorizationEndpoint.ConsentPath, consent.AbsolutePath);
+        StringAssert.Contains(await browser.Http.GetStringAsync(consent), "mail-b");
+
+        ConfigureAccounts(allowedEmails: ["new-owner@example.com"]);
+        var staleConsent = await browser.Http.GetStringAsync(consent);
+        Assert.IsFalse(staleConsent.Contains("mail-b", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task An_expired_key_is_refused_and_a_key_without_expiry_still_works()
     {
         // Keys written straight to the store file before the server starts, as an older or
@@ -402,14 +505,48 @@ public sealed class McpOAuthIntegrationTests
 
     private async Task<string> ConnectAndGetAccessTokenAsync() => (await ConnectAndGetTokensAsync()).AccessToken;
 
-    private async Task<TokenContainer> ConnectAndGetTokensAsync()
+    private async Task<TokenContainer> ConnectAndGetTokensAsync(string[]? allowedAccounts = null)
     {
         ServeMetadataDocument();
         var tokens = new CapturingTokenCache();
-        await using (await _app.ConnectAsync(OAuth(_app.CreateBrowser(), tokens, MetadataDocumentUrl, new Uri("http://127.0.0.1:43125/callback"))))
+        await using (await _app.ConnectAsync(OAuth(_app.CreateBrowser(), tokens, MetadataDocumentUrl, new Uri("http://127.0.0.1:43125/callback"), allowedAccounts)))
         {
         }
         return tokens.Tokens!;
+    }
+
+    private void ConfigureAccounts(string[]? allowedEmails = null) =>
+        _app.UpdateSettings(AdjutantApp.DefaultSettings(allowedEmails, accounts:
+        [
+            new AccountInfo { Id = "mail-a", DisplayName = "Mail A", Provider = "microsoft365" },
+            new AccountInfo { Id = "mail-b", DisplayName = "Mail B", Provider = "imap" },
+            new AccountInfo { Id = "mail-c", DisplayName = "Mail C", Provider = "google", Enabled = false }
+        ]));
+
+    private async Task<McpClient> OpenToolClientAsync(string credential)
+    {
+        var http = _app.CreateClient();
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", credential);
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions { Endpoint = new Uri(AdjutantApp.Origin + "/") }, http);
+        return await McpClient.CreateAsync(transport);
+    }
+
+    private static async Task AssertAccountListAsync(McpClient client, params string[] expected)
+    {
+        var result = await client.CallToolAsync("list_accounts", new Dictionary<string, object?> { ["includeDisabled"] = true });
+        var text = ((TextContentBlock)result.Content.Single()).Text;
+        Assert.IsFalse(result.IsError == true, text);
+        using var json = JsonDocument.Parse(text);
+        var ids = json.RootElement.GetProperty("accounts").EnumerateArray().Select(a => a.GetProperty("accountId").GetString()).ToArray();
+        CollectionAssert.AreEquivalent(expected, ids);
+    }
+
+    private static async Task AssertAccountDeniedAsync(McpClient client, string tool, Dictionary<string, object?> arguments)
+    {
+        var result = await client.CallToolAsync(tool, arguments);
+        Assert.IsTrue(result.IsError == true, $"Expected {tool} to be denied.");
+        StringAssert.Contains(((TextContentBlock)result.Content.Single()).Text, "not authorized");
     }
 
     private async Task<HttpResponseMessage> RefreshAsync(string refreshToken) =>
@@ -452,14 +589,14 @@ public sealed class McpOAuthIntegrationTests
         return new Uri($"{AdjutantApp.Origin}{AuthorizationEndpoint.Path}?{query}");
     }
 
-    private static ClientOAuthOptions OAuth(AdjutantApp.Browser browser, ITokenCache tokens, Uri? metadataDocument, Uri redirectUri) => new()
+    private static ClientOAuthOptions OAuth(AdjutantApp.Browser browser, ITokenCache tokens, Uri? metadataDocument, Uri redirectUri, string[]? allowedAccounts = null) => new()
     {
         RedirectUri = redirectUri,
         ClientMetadataDocumentUri = metadataDocument,
         TokenCache = tokens,
         AuthorizationCallbackHandler = async (context, _) =>
         {
-            var redirect = await browser.AuthorizeAsync(context.AuthorizationUri, AdjutantApp.Owner);
+            var redirect = await browser.AuthorizeAsync(context.AuthorizationUri, AdjutantApp.Owner, allowedAccounts: allowedAccounts);
             var query = HttpUtility.ParseQueryString(redirect.Query);
             return new AuthorizationResult { Code = query["code"], State = query["state"], Iss = query["iss"] };
         },

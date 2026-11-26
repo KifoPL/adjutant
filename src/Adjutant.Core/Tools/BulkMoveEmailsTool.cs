@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -13,7 +14,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class BulkMoveEmailsTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     ILogger<BulkMoveEmailsTool> logger)
 {
@@ -45,29 +46,16 @@ public sealed class BulkMoveEmailsTool(
         try
         {
             // Resolve accounts once per unique accountId
-            var accounts = await ResolveAccountsAsync(items);
+            var accounts = await ToolGuard.ResolveBulkAccountsAsync(accountRegistry, items);
 
             var results = await Task.WhenAll(items.Select(async item =>
             {
                 await Throttle.WaitAsync();
                 try
                 {
-                    if (!accounts.TryGetValue(item.AccountId, out var account))
-                    {
-                        return new BulkResultItem(item.EmailId, item.AccountId, false, $"Account '{item.AccountId}' not found");
-                    }
-
-                    if (!account.Enabled)
-                    {
-                        return new BulkResultItem(item.EmailId, item.AccountId, false, ToolGuard.DescribeDisabledAccount(item.AccountId));
-                    }
-
-                    // Per-item rather than up-front, so one scoped-out account doesn't fail the batch.
-                    if (!AccountCapabilities.IsAllowed(account, AccountPermission.EmailRead))
-                    {
-                        return new BulkResultItem(item.EmailId, item.AccountId, false,
-                            $"Account '{item.AccountId}' does not permit {AccountPermissions.Describe(AccountPermission.EmailRead)}");
-                    }
+                    var (account, error) = accounts[item.AccountId];
+                    if (account is null)
+                        return new BulkResultItem(item.EmailId, item.AccountId, false, error);
 
                     var provider = providerFactory.GetProvider(account.Provider);
                     var newEmailId = await provider.MoveEmailAsync(item.AccountId, item.EmailId, destination, CancellationToken.None);
@@ -104,18 +92,6 @@ public sealed class BulkMoveEmailsTool(
             logger.LogError(ex, "Error in bulk_move_emails tool");
             throw ToolGuard.Failure("bulk move emails", ex);
         }
-    }
-
-    private async Task<Dictionary<string, AccountInfo>> ResolveAccountsAsync(BulkEmailItem[] items)
-    {
-        var result = new Dictionary<string, AccountInfo>();
-        foreach (var accountId in items.Select(i => i.AccountId).Distinct())
-        {
-            var account = await accountRegistry.GetAccountAsync(accountId);
-            if (account != null)
-                result[accountId] = account;
-        }
-        return result;
     }
 
     /// <param name="NewEmailId">The message's ID after the move (null when unknown or on failure).</param>

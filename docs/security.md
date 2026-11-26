@@ -69,8 +69,8 @@ See [Configuration](configuration.md#the-admin-token).
   `ExternalBaseUrl` stops the server from starting, since the key would cross the wire in clear
   text.
 
-An API key authorizes access to *every* account the server is configured with. Per-account
-limits are a separate layer — see [Per-Account Permissions](#per-account-permissions) below.
+Choose which accounts a new key can reach when you create it in **MCP Access**.
+See [MCP account scoping](#mcp-account-scoping) below.
 
 See [Configuration](configuration.md#mcp-endpoint-api-keys-http-server) for setup.
 
@@ -86,7 +86,7 @@ the registration and federates only the *sign-in* to the admin console's provide
 - **Approval is the owner's.** `/connect/authorize` requires an admin console session that still
   passes the console's own checks (allow-list, bound provider subject). A break-glass admin-token
   session can't approve a client outside Development, since there is no verified identity behind it.
-- **Consent on every authorization.** The consent page names the client, says whether its name is
+- **Consent on every authorization.** The consent page asks which accounts to grant, names the client, says whether its name is
   verified (client ID metadata document) or self-asserted (dynamic registration), shows the host it
   redirects to, and warns about loopback redirects, which any program on the machine can claim. It
   refuses to be framed. Without it, anyone could register a client with their own redirect URI and
@@ -108,7 +108,21 @@ the registration and federates only the *sign-in* to the admin console's provide
   Clients, approvals and refresh tokens are in `identity.db`; token values are stored hashed by
   OpenIddict.
 
-Like an API key, an OAuth token reaches every account the server is configured with.
+### MCP account scoping
+
+For a new API key or OAuth approval, choose **All accounts, including accounts added later** or
+**Selected accounts**. A selected-account grant stays limited to those account IDs, including
+after an OAuth token refresh. Existing keys and approvals, the first-start key, and the
+`ADJUTANT_MCP_KEY` environment key retain access to all accounts.
+
+MCP tools list and route only within the credential's account scope. Naming an account outside
+the scope returns an authorization error. [Per-account permissions](#per-account-permissions)
+still determine which operations are allowed. Stored attachments fetched from an email retain
+the scope check on their source account. Files uploaded directly to `/attachments` have no
+source account.
+
+Keep `Adjutant:Mcp:RequireApiKey` enabled to enforce account scoping. Setting it to `false`
+allows anonymous access to the MCP and attachment endpoints.
 
 ### Admin Console Sign-In
 

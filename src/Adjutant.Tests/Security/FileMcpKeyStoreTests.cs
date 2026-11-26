@@ -62,6 +62,30 @@ public class FileMcpKeyStoreTests
     }
 
     [TestMethod]
+    public void Account_scope_survives_reload_and_last_used_updates()
+    {
+        var store = CreateStore();
+        var (_, secret) = store.Create("scoped", allowedAccounts: ["Team", "TEAM", "personal"]);
+        var (_, legacy) = store.Create("unrestricted");
+
+        store = CreateStore();
+        CollectionAssert.AreEqual(new[] { "Team", "personal" }, store.Validate(secret)!.AllowedAccounts!.ToArray());
+        Assert.IsNull(store.Validate(legacy)!.AllowedAccounts);
+
+        store = CreateStore();
+        CollectionAssert.AreEqual(new[] { "Team", "personal" }, store.Validate(secret)!.AllowedAccounts!.ToArray());
+    }
+
+    [TestMethod]
+    public void Create_rejects_blank_account_ids()
+    {
+        var store = CreateStore();
+
+        Assert.ThrowsExactly<ArgumentException>(() => store.Create("scoped", allowedAccounts: [" "]));
+        Assert.IsEmpty(store.List());
+    }
+
+    [TestMethod]
     public void Create_ProducesDistinctSecrets()
     {
         var store = CreateStore();

@@ -4,6 +4,7 @@ using Adjutant.Core.Models;
 using Adjutant.Core.Providers;
 using Adjutant.Core.Services;
 using Adjutant.Core.Utilities;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -13,7 +14,7 @@ namespace Adjutant.Core.Tools;
 /// <summary>Finds common free meeting slots using the owner's events and Exchange free/busy.</summary>
 [McpServerToolType]
 public sealed class FindAvailableTimesTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     ILogger<FindAvailableTimesTool> logger)
 {

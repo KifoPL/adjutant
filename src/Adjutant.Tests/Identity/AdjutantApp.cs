@@ -6,6 +6,7 @@ using System.Web;
 using Adjutant.Core.Configuration;
 using Adjutant.HttpServer.BlazorAdmin;
 using Adjutant.HttpServer.Identity;
+using Adjutant.HttpServer.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
@@ -58,9 +59,9 @@ internal sealed partial class AdjutantApp : WebApplicationFactory<Adjutant.HttpS
     public FakeMetadataHost MetadataHost { get; } = new();
 
     /// <summary>An owner allow-list and a configured Google provider (never contacted), so OAuth is offered.</summary>
-    public static object DefaultSettings(string[]? allowedEmails = null, bool enableOAuth = true) => new
+    public static object DefaultSettings(string[]? allowedEmails = null, bool enableOAuth = true, object[]? accounts = null) => new
     {
-        Adjutant = new { Accounts = Array.Empty<object>(), Mcp = new { EnableOAuth = enableOAuth } },
+        Adjutant = new { Accounts = accounts ?? [], Mcp = new { EnableOAuth = enableOAuth } },
         AdminAuth = new
         {
             AllowedEmails = allowedEmails ?? [Owner],
@@ -177,7 +178,12 @@ internal sealed partial class AdjutantApp : WebApplicationFactory<Adjutant.HttpS
         /// (if needed) as <paramref name="email"/>, then allows or denies on the consent page. Returns the
         /// redirect to the client's redirect URI.
         /// </summary>
-        public async Task<Uri> AuthorizeAsync(Uri authorizationUri, string email, string decision = AuthorizationEndpoint.Allow)
+        public async Task<Uri> AuthorizeAsync(
+            Uri authorizationUri,
+            string email,
+            string decision = AuthorizationEndpoint.Allow,
+            string[]? allowedAccounts = null,
+            Action? beforeApproval = null)
         {
             var response = await Http.GetAsync(authorizationUri);
             var location = RedirectOf(response);
@@ -199,7 +205,11 @@ internal sealed partial class AdjutantApp : WebApplicationFactory<Adjutant.HttpS
             var fields = HiddenInput().Matches(html)
                 .Select(m => new KeyValuePair<string, string>(WebUtility.HtmlDecode(m.Groups[1].Value), WebUtility.HtmlDecode(m.Groups[2].Value)))
                 .Append(new(AuthorizationEndpoint.DecisionField, decision))
+                .Append(new(McpAccountSelection.ModeField, allowedAccounts is null ? McpAccountSelection.All : McpAccountSelection.Selected))
                 .ToList();
+            if (allowedAccounts is not null)
+                fields.AddRange(allowedAccounts.Select(id => new KeyValuePair<string, string>(McpAccountSelection.AccountField, id)));
+            beforeApproval?.Invoke();
             response = await Http.PostAsync(AuthorizationEndpoint.Path, new FormUrlEncodedContent(fields));
             return RedirectOf(response);
         }

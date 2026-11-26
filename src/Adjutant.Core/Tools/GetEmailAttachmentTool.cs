@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -17,7 +18,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class GetEmailAttachmentTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     IAttachmentStore attachmentStore,
     ILogger<GetEmailAttachmentTool> logger)
@@ -69,7 +70,7 @@ public sealed class GetEmailAttachmentTool(
             }
 
             // stash mode
-            var stored = attachmentStore.Put(content.Name, content.ContentType, content.Bytes);
+            var stored = attachmentStore.Put(content.Name, content.ContentType, content.Bytes, account.Id);
             if (stored == null)
                 throw new McpException(
                     $"Could not stash the attachment ({content.Bytes.LongLength:N0} bytes); the attachment is over the per-attachment cap or the store is full. Try inline mode if the file is small.");

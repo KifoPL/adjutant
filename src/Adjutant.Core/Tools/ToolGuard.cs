@@ -74,6 +74,34 @@ internal static class ToolGuard
         $"Account '{accountId}' is disabled. Re-enable it in the admin console (HTTP server) or the " +
         "configuration file, or use another account from list_accounts.";
 
+    internal static async Task<Dictionary<string, (AccountInfo? Account, string? Error)>> ResolveBulkAccountsAsync(
+        IAccountRegistry registry, BulkEmailItem[] items)
+    {
+        var result = new Dictionary<string, (AccountInfo?, string?)>();
+        foreach (var accountId in items.Select(item => item.AccountId).Distinct())
+        {
+            try
+            {
+                var account = await registry.GetAccountAsync(accountId);
+                result[accountId] = account switch
+                {
+                    null => (null, $"Account '{accountId}' not found"),
+                    { Enabled: false } => (null, DescribeDisabledAccount(accountId)),
+                    _ when !AccountCapabilities.IsAllowed(account, AccountPermission.EmailRead) =>
+                        (null, $"Account '{accountId}' does not permit {AccountPermissions.Describe(AccountPermission.EmailRead)}"),
+                    _ => (account, null)
+                };
+            }
+            catch (McpAccountAccessException ex)
+            {
+                // One denied account must not fail the other items in the batch.
+                result[accountId] = (null, ex.Message);
+            }
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// Resolves an explicitly requested account and verifies it permits
     /// <paramref name="permission"/>. Used when the caller named an account, so a denial is

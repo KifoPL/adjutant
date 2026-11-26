@@ -9,8 +9,9 @@ Adjutant exposes tools through the Model Context Protocol (MCP) that AI assistan
 ### Account Management
 
 #### `list_accounts`
-Get list of all enabled accounts across all providers, with what each one allows. Disabled
-accounts are left out, matching the fan-out tools, which never query them.
+List the enabled accounts within the credential's scope, with what each one allows. Disabled
+accounts are left out, matching the fan-out tools, which never query them. `includeDisabled`
+only adds accounts within the same scope.
 
 **Parameters**:
 - `includeDisabled` (default: false): Also list disabled accounts. Every entry carries `enabled`,
@@ -79,6 +80,10 @@ Two behaviours differ by how the account was chosen:
 
 Smart routing (`send_email`, `create_event`, `create_contact`, `delete_event`,
 `respond_to_event`) only ever selects enabled accounts that permit the operation.
+
+An HTTP credential's [account scope](security.md#mcp-account-scoping) applies before account
+permissions. Naming an excluded account returns an authorization error. Fan-out and smart
+routing skip excluded accounts.
 
 A **disabled** account can't be used by any tool. Naming it with `accountId` fails with
 `Account '<id>' is disabled. ...`; in a `bulk_*` tool only the items on that account fail. It is
@@ -402,7 +407,11 @@ The entry stays in the store until `send_email` consumes it,
 `DELETE /attachments/{id}` removes it, or the 15 min TTL expires. Multiple
 GETs against the same ID are fine.
 
-Returns `404` if the ID is unknown, expired, or already consumed.
+An attachment from `get_email_attachment` can be downloaded, deleted, or passed to `send_email`
+only when the credential can access its source account. This account check also applies when
+the attachment is forwarded from a different account.
+
+Returns `404` if the entry is unknown, expired, already consumed, or outside the credential's scope.
 
 ```sh
 curl -OJ https://adjutant.tail920062.ts.net/attachments/AbCdEf1234
@@ -412,7 +421,8 @@ curl -OJ https://adjutant.tail920062.ts.net/attachments/AbCdEf1234
 
 Removes an attachment from the store before its TTL. Returns `204` on
 success, `404` if the entry was already gone. Polite cleanup for agents
-that uploaded an attachment they decided not to send.
+that uploaded an attachment they decided not to send. An entry outside the credential's scope
+also returns `404`.
 
 ```sh
 curl -X DELETE https://adjutant.tail920062.ts.net/attachments/AbCdEf1234
