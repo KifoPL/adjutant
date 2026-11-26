@@ -123,6 +123,8 @@ public class Program
             builder.Configuration.GetSection("AdminAuth"));
 
         // Add Adjutant core services (providers, tools, account registry)
+        builder.Services.AddSingleton<HttpMcpCallerContextAccessor>();
+        builder.Services.AddSingleton<IMcpCallerContextAccessor>(sp => sp.GetRequiredService<HttpMcpCallerContextAccessor>());
         builder.Services.AddAdjutantCore();
 
         // Register admin services
@@ -198,6 +200,7 @@ public class Program
                 .RequireAuthenticatedUser());
 
         // Configure MCP server with HTTP/SSE transport and register tools
+        var requireMcpCredential = builder.Configuration.GetValue("Adjutant:Mcp:RequireApiKey", true);
         builder.Services
             .AddMcpServer(AdjutantServerOptions.Configure)
             // Stateless: no tool needs server-to-client requests or session state, and the API
@@ -242,7 +245,8 @@ public class Program
                 {
                     try
                     {
-                        return await next(request, cancellationToken);
+                        var caller = request.Services!.GetRequiredService<HttpMcpCallerContextAccessor>();
+                        return await caller.InvokeToolAsync(request, next, requireMcpCredential, cancellationToken);
                     }
                     catch (ArgumentException ex) when (ex.Message.Contains("missing a value for the required parameter"))
                     {
@@ -309,7 +313,7 @@ public class Program
         // OpenIddict serves token, revocation and discovery itself.
         app.MapMcpOAuth();
 
-        if (builder.Configuration.GetValue("Adjutant:Mcp:RequireApiKey", true))
+        if (requireMcpCredential)
         {
             mcpEndpoints.RequireAuthorization(McpApiKeyHandler.PolicyName);
             attachmentEndpoints.RequireAuthorization(McpApiKeyHandler.PolicyName);

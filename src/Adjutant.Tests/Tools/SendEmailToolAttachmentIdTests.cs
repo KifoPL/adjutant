@@ -105,6 +105,24 @@ public class SendEmailToolAttachmentIdTests
     }
 
     [TestMethod]
+    public async Task SendEmail_DisabledSender_DoesNotConsumeAttachment()
+    {
+        var account = TestData.CreateAccount(id: "acc-1", enabled: false);
+        var registry = new IAccountRegistryCreateExpectations();
+        registry.Setups.GetAccountAsync(account.Id).ReturnValue(Task.FromResult<AccountInfo?>(account));
+        var store = new TestAttachmentStore();
+        store.Seed("u1", "attachment.txt", [1]);
+        var tool = new SendEmailTool(registry.Instance(), new IProviderServiceFactoryCreateExpectations().Instance(),
+            store, NullLogger<SendEmailTool>.Instance);
+
+        var error = await Assert.ThrowsExactlyAsync<McpException>(() => tool.SendEmail(
+            ["to@example.com"], "Subject", "Body", account.Id, attachments: [new() { AttachmentId = "u1" }]));
+
+        StringAssert.Contains(error.Message, "is disabled");
+        Assert.AreEqual(0, store.ConsumedIds.Count);
+    }
+
+    [TestMethod]
     public async Task SendEmail_BothInlineAndId_ThrowsMcpException_AndDoesNotConsume()
     {
         var account = TestData.CreateAccount(id: "acc-1", provider: "microsoft365");

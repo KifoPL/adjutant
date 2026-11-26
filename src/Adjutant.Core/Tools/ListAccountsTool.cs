@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -13,7 +14,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class ListAccountsTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     ILogger<ListAccountsTool> logger)
 {
     [McpServerTool, Description("List the enabled accounts with their capabilities and permissions. Disabled accounts are left out unless includeDisabled is true; they are never queried by tools that fan out over all accounts. Returns accountId, provider, displayName, domains, enabled, capabilities (calendar, email, contacts), and permissions (emailRead, emailSend, calendarRead, calendarWrite, contactsRead, contactsWrite) for each. Permissions are what the account actually allows — a false value means every tool needing it will be refused for that account, so pick an account whose permissions cover the operation. Use the accountId values when calling other tools to scope operations to a specific account.")]

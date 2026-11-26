@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -15,7 +16,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed partial class GetContextualEmailSummaryTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     ILogger<GetContextualEmailSummaryTool> logger)
 {

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -12,7 +13,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class DeleteEventTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     ILogger<DeleteEventTool> logger)
 {

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
 using Adjutant.Core.Utilities;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -15,7 +16,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class GetCalendarEventDetailsTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     ILogger<GetCalendarEventDetailsTool> logger)
 {

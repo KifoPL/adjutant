@@ -46,7 +46,7 @@ public static class AttachmentEndpoints
         {
             return Results.Problem(
                 title: "Attachment not found",
-                detail: "The attachment ID is unknown, expired, or was already consumed by send_email.",
+                detail: "No accessible attachment was found for that ID.",
                 statusCode: StatusCodes.Status404NotFound);
         }
 
@@ -64,7 +64,7 @@ public static class AttachmentEndpoints
             ? Results.NoContent()
             : Results.Problem(
                 title: "Attachment not found",
-                detail: "Nothing to delete; the attachment ID is unknown, expired, or was already consumed.",
+                detail: "No accessible attachment was found for that ID.",
                 statusCode: StatusCodes.Status404NotFound);
     }
 

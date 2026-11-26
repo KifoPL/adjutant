@@ -616,6 +616,11 @@ them can be revoked without disturbing the others; the console shows the key onc
 along with a ready-to-paste snippet for Claude Code, VS Code, `mcp-remote`, or curl. Revoking
 takes effect immediately, and revoked keys are kept in the list for the record.
 
+**Account scope**: choose **All accounts, including accounts added later** or **Selected accounts**
+when you create a key. To change a key's scope in the console, create a replacement and revoke
+the old key. In `mcp-keys.json`, the optional `allowedAccounts` array contains account IDs. A missing
+or empty array gives access to all accounts. See [MCP account scoping](security.md#mcp-account-scoping).
+
 **Key lifetime**: each new key gets a lifetime of 30, 90, 180 or 365 days, or **No expiry**; the
 console defaults to 90 days. An expired key is refused from the moment in its `expiresUtc`, and
 the server logs a warning naming it (at most every five minutes per key), so an agent that
@@ -753,7 +758,8 @@ immediately.
 claude mcp add --transport http adjutant https://your-server.example.com/
 ```
 
-Then follow the sign-in prompt. For a claude.ai or Claude Desktop custom connector, add the
+Then follow the sign-in prompt and choose the accounts on the consent page. To change the scope,
+disconnect the app and approve it again. For a claude.ai or Claude Desktop custom connector, add the
 same URL as a connector. **Those connectors call from Anthropic's cloud, so the server must be
 reachable from the internet** (for example through a Tailscale Funnel endpoint); clients running on
 your own machine only need to reach it from there.

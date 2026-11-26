@@ -17,7 +17,8 @@ public interface IMcpKeyStore
     /// </summary>
     /// <param name="label">What the key is for, so it can be told apart when revoking.</param>
     /// <param name="lifetime">How long the key works for, from now; null for a key that never expires.</param>
-    (McpApiKey Key, string Secret) Create(string label, TimeSpan? lifetime = null);
+    /// <param name="allowedAccounts">The allowed account IDs. Null or empty grants access to all accounts.</param>
+    (McpApiKey Key, string Secret) Create(string label, TimeSpan? lifetime = null, IEnumerable<string>? allowedAccounts = null);
 
     /// <summary>
     /// Marks a key revoked. Returns false when the id is unknown or already revoked.

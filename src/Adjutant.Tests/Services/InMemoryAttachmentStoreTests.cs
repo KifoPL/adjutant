@@ -1,3 +1,4 @@
+using Adjutant.Core.Security;
 using Adjutant.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -9,12 +10,14 @@ public class InMemoryAttachmentStoreTests
 {
     private static InMemoryAttachmentStore CreateStore(
         AttachmentStoreOptions? options = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        IMcpCallerContextAccessor? callerContext = null)
     {
         return new InMemoryAttachmentStore(
             Options.Create(options ?? new AttachmentStoreOptions()),
             NullLogger<InMemoryAttachmentStore>.Instance,
-            time);
+            time,
+            callerContext);
     }
 
     [TestMethod]
@@ -117,6 +120,24 @@ public class InMemoryAttachmentStoreTests
     }
 
     [TestMethod]
+    public void ScopedCaller_CannotReadConsumeOrDeleteAttachmentFromAnotherAccount()
+    {
+        var caller = new TestCallerContext { Current = new(null, "key", ["allowed"]) };
+        var store = CreateStore(callerContext: caller);
+        var stashed = store.Put("received.txt", null, [1], sourceAccountId: "excluded")!;
+        var uploaded = store.Put("uploaded.txt", null, [2])!;
+
+        Assert.IsNull(store.TryRead(stashed.Id));
+        Assert.IsNull(store.TryConsume(stashed.Id));
+        Assert.IsFalse(store.TryDelete(stashed.Id));
+        Assert.AreSame(uploaded, store.TryConsume(uploaded.Id));
+
+        caller.Current = new(null, "other-key", ["excluded"]);
+        Assert.AreSame(stashed, store.TryRead(stashed.Id));
+        Assert.AreSame(stashed, store.TryConsume(stashed.Id));
+    }
+
+    [TestMethod]
     public void TryRead_ExpiredEntry_ReturnsNullAndEvicts()
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
@@ -162,5 +183,10 @@ public class InMemoryAttachmentStoreTests
         private DateTimeOffset _now = start;
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan by) => _now = _now.Add(by);
+    }
+
+    private sealed class TestCallerContext : IMcpCallerContextAccessor
+    {
+        public required McpCallerContext Current { get; set; }
     }
 }

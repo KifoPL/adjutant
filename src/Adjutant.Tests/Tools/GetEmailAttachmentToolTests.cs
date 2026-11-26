@@ -42,7 +42,8 @@ public class GetEmailAttachmentToolTests
         // ready to feed into send_email.
         var stored = store.TryConsume(newId);
         Assert.IsNotNull(stored);
-        CollectionAssert.AreEqual(bytes, stored!.Bytes);
+        Assert.AreEqual(account.Id, stored!.SourceAccountId);
+        CollectionAssert.AreEqual(bytes, stored.Bytes);
 
         regExp.Verify();
         factExp.Verify();

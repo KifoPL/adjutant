@@ -3,10 +3,14 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using Adjutant.Core.Configuration
+@using Adjutant.Core.Models
 @using Adjutant.Core.Security
+@using Adjutant.Core.Services
 @using Adjutant.HttpServer.Identity
+@using Adjutant.HttpServer.Security
 @using Microsoft.Extensions.Options
 @inject IMcpKeyStore KeyStore
+@inject IAccountRegistry AccountRegistry
 @inject IOptionsMonitor<AdjutantConfiguration> ServerConfig
 @inject ConnectedApps ConnectedApps
 @inject OAuthAvailability OAuth
@@ -85,10 +89,34 @@
                     <option value="@days">@label</option>
                 }
             </select>
-            <button class="btn btn-primary" @onclick="Create" disabled="@_busy">
-                <i class="bi bi-plus-lg me-1"></i>Create
-            </button>
         </div>
+        <fieldset class="my-3">
+            <legend class="fs-6 fw-semibold">Account access</legend>
+            <select class="form-select w-auto" @bind="_accountAccess" aria-label="Account access">
+                <option value="" disabled>Choose account access</option>
+                <option value="@McpAccountSelection.All">All accounts, including accounts added later</option>
+                @if (_accounts.Count > 0)
+                {
+                    <option value="@McpAccountSelection.Selected">Selected accounts</option>
+                }
+            </select>
+            @if (_accountAccess == McpAccountSelection.Selected)
+            {
+                <div class="mt-2">
+                    @foreach (var account in _accounts)
+                    {
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" checked="@_selectedAccounts.Contains(account.Id)"
+                                   @onchange="e => ToggleAccount(account.Id, e.Value is true)" />
+                            @account.DisplayName <span class="text-muted">(@account.Id)</span>
+                        </label>
+                    }
+                </div>
+            }
+        </fieldset>
+        <button class="btn btn-primary" @onclick="CreateAsync" disabled="@(_busy || _accountAccess.Length == 0)">
+            <i class="bi bi-plus-lg me-1"></i>Create
+        </button>
         <div class="form-text">
             Give each client its own key, so one can be revoked without disturbing the others.
             A key stops working when it expires; choose <strong>No expiry</strong> for a headless
@@ -112,6 +140,7 @@
                 <thead>
                     <tr>
                         <th>Label</th>
+                        <th>Accounts</th>
                         <th>Created</th>
                         <th>Last used</th>
                         <th>Expires</th>
@@ -126,6 +155,7 @@
                                 @key.Label
                                 <div class="text-muted small font-monospace">@key.Id</div>
                             </td>
+                            <td class="small">@(key.AllowedAccounts is { Count: > 0 } ids ? string.Join(", ", ids) : "All accounts")</td>
                             <td class="small">@key.CreatedUtc.LocalDateTime.ToString("g")</td>
                             <td class="small">
                                 @if (key.LastUsedUtc is null)
@@ -301,6 +331,9 @@
     private List<ConnectedApp>? _apps;
     private string _newLabel = "";
     private int _newLifetimeDays = 90;
+    private IReadOnlyList<AccountInfo> _accounts = [];
+    private string _accountAccess = "";
+    private readonly HashSet<string> _selectedAccounts = new(StringComparer.OrdinalIgnoreCase);
     private string? _newSecret;
     private string _snippet = "claude-code";
     private string? _confirmDisconnect;
@@ -379,6 +412,7 @@
     protected override async Task OnInitializedAsync()
     {
         ReloadKeys();
+        _accounts = (await AccountRegistry.GetAllAccountsAsync()).OrderBy(a => a.DisplayName).ToList();
         await ReloadAppsAsync();
     }
 
@@ -397,7 +431,15 @@
         }
     }
 
-    private void Create()
+    private void ToggleAccount(string id, bool selected)
+    {
+        if (selected)
+            _selectedAccounts.Add(id);
+        else
+            _selectedAccounts.Remove(id);
+    }
+
+    private async Task CreateAsync()
     {
         if (string.IsNullOrWhiteSpace(_newLabel))
         {
@@ -410,9 +452,12 @@
         try
         {
             TimeSpan? lifetime = _newLifetimeDays > 0 ? TimeSpan.FromDays(_newLifetimeDays) : null;
-            var (_, secret) = KeyStore.Create(_newLabel, lifetime);
+            var allowedAccounts = await McpAccountSelection.ResolveAsync(AccountRegistry, _accountAccess, _selectedAccounts);
+            var (_, secret) = KeyStore.Create(_newLabel, lifetime, allowedAccounts);
             _newSecret = secret;
             _newLabel = "";
+            _accountAccess = "";
+            _selectedAccounts.Clear();
             ReloadKeys();
         }
         catch (Exception ex)

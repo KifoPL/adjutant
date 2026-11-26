@@ -31,7 +31,7 @@ public sealed class TestAttachmentStore : IAttachmentStore
         return entry;
     }
 
-    public StoredAttachment? Put(string name, string? contentType, byte[] bytes)
+    public StoredAttachment? Put(string name, string? contentType, byte[] bytes, string? sourceAccountId = null)
     {
         // Tests don't go through the upload path; force them to use Seed.
         throw new NotImplementedException("Use Seed in tests.");

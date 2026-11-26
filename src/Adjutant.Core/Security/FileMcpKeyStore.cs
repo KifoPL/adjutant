@@ -118,12 +118,16 @@ public sealed class FileMcpKeyStore : IMcpKeyStore
         }
     }
 
-    public (McpApiKey Key, string Secret) Create(string label, TimeSpan? lifetime = null)
+    public (McpApiKey Key, string Secret) Create(string label, TimeSpan? lifetime = null, IEnumerable<string>? allowedAccounts = null)
     {
         if (string.IsNullOrWhiteSpace(label))
             throw new ArgumentException("A label is required so keys can be told apart when revoking.", nameof(label));
         if (lifetime is { } span && span <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(lifetime), lifetime, "A key's lifetime must be positive; pass null for a key that never expires.");
+
+        var accountIds = allowedAccounts?.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (accountIds?.Any(string.IsNullOrWhiteSpace) == true)
+            throw new ArgumentException("Allowed account IDs must not be empty.", nameof(allowedAccounts));
 
         var secret = SecretPrefix + Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
         var now = _time.GetUtcNow();
@@ -134,7 +138,8 @@ public sealed class FileMcpKeyStore : IMcpKeyStore
             Label = label.Trim(),
             Hash = Convert.ToBase64String(ComputeHash(secret)),
             CreatedUtc = now,
-            ExpiresUtc = now + lifetime
+            ExpiresUtc = now + lifetime,
+            AllowedAccounts = accountIds is { Length: > 0 } ? Array.AsReadOnly(accountIds) : null
         };
 
         lock (_gate)
@@ -274,6 +279,8 @@ public sealed class FileMcpKeyStore : IMcpKeyStore
             var json = File.ReadAllText(_filePath);
             var document = JsonSerializer.Deserialize<KeyFile>(json, JsonOptions);
             _keys = document?.Keys ?? [];
+            if (_keys.Any(k => k.AllowedAccounts?.Any(string.IsNullOrWhiteSpace) == true))
+                throw new InvalidDataException("Allowed account IDs must not be empty.");
             var now = _time.GetUtcNow();
             _logger.LogInformation(
                 "Loaded {Usable} usable, {Expired} expired and {Revoked} revoked MCP API key(s) from {Path}",

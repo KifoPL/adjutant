@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -13,7 +14,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class BulkDeleteEmailsTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     ILogger<BulkDeleteEmailsTool> logger)
 {
@@ -42,29 +43,16 @@ public sealed class BulkDeleteEmailsTool(
         try
         {
             // Resolve accounts once per unique accountId
-            var accounts = await ResolveAccountsAsync(items);
+            var accounts = await ToolGuard.ResolveBulkAccountsAsync(accountRegistry, items);
 
             var results = await Task.WhenAll(items.Select(async item =>
             {
                 await Throttle.WaitAsync();
                 try
                 {
-                    if (!accounts.TryGetValue(item.AccountId, out var account))
-                    {
-                        return new BulkResultItem(item.EmailId, item.AccountId, false, $"Account '{item.AccountId}' not found");
-                    }
-
-                    if (!account.Enabled)
-                    {
-                        return new BulkResultItem(item.EmailId, item.AccountId, false, ToolGuard.DescribeDisabledAccount(item.AccountId));
-                    }
-
-                    // Per-item rather than up-front, so one scoped-out account doesn't fail the batch.
-                    if (!AccountCapabilities.IsAllowed(account, AccountPermission.EmailRead))
-                    {
-                        return new BulkResultItem(item.EmailId, item.AccountId, false,
-                            $"Account '{item.AccountId}' does not permit {AccountPermissions.Describe(AccountPermission.EmailRead)}");
-                    }
+                    var (account, error) = accounts[item.AccountId];
+                    if (account is null)
+                        return new BulkResultItem(item.EmailId, item.AccountId, false, error);
 
                     var provider = providerFactory.GetProvider(account.Provider);
                     await provider.DeleteEmailAsync(item.AccountId, item.EmailId, CancellationToken.None);
@@ -102,18 +90,6 @@ public sealed class BulkDeleteEmailsTool(
             logger.LogError(ex, "Error in bulk_delete_emails tool");
             throw ToolGuard.Failure("bulk delete emails", ex);
         }
-    }
-
-    private async Task<Dictionary<string, AccountInfo>> ResolveAccountsAsync(BulkEmailItem[] items)
-    {
-        var result = new Dictionary<string, AccountInfo>();
-        foreach (var accountId in items.Select(i => i.AccountId).Distinct())
-        {
-            var account = await accountRegistry.GetAccountAsync(accountId);
-            if (account != null)
-                result[accountId] = account;
-        }
-        return result;
     }
 
     private sealed record BulkResultItem(string EmailId, string AccountId, bool Success, string? Error);

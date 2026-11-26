@@ -39,6 +39,9 @@ public sealed record McpApiKey
     /// </summary>
     public DateTimeOffset? ExpiresUtc { get; init; }
 
+    /// <summary>Account IDs this key may use. Omitted or empty grants access to all accounts.</summary>
+    public IReadOnlyList<string>? AllowedAccounts { get; init; }
+
     /// <summary>
     /// Derived from <see cref="RevokedUtc"/>: the key hasn't been revoked. Expiry is separate
     /// (<see cref="IsExpired"/>). Kept out of the JSON so the stored file has one source of

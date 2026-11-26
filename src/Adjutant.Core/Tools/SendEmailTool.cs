@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Adjutant.Core.Models;
 using Adjutant.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -13,7 +14,7 @@ namespace Adjutant.Core.Tools;
 /// </summary>
 [McpServerToolType]
 public sealed class SendEmailTool(
-    IAccountRegistry accountRegistry,
+    [FromKeyedServices(McpAccountRegistry.ServiceKey)] IAccountRegistry accountRegistry,
     IProviderServiceFactory providerFactory,
     IAttachmentStore attachmentStore,
     ILogger<SendEmailTool> logger)
@@ -49,20 +50,11 @@ public sealed class SendEmailTool(
         if (to is null || to.Count == 0)
             throw new McpException("At least one recipient address is required in the 'to' field.");
 
-        List<OutboundEmailAttachment>? resolvedAttachments = null;
         if (attachments is { Count: > 0 })
         {
             var shapeError = ValidateAttachmentShapes(attachments);
             if (shapeError != null)
                 throw new McpException(shapeError);
-
-            // Second pass: consume any AttachmentId-backed entries. From this
-            // point on, IDs are removed from the store; an error after this
-            // requires the agent to re-upload.
-            var (resolved, consumeError) = ResolveAttachments(attachments);
-            if (consumeError != null)
-                throw new McpException(consumeError);
-            resolvedAttachments = resolved;
         }
 
         var toJoined = string.Join(", ", to);
@@ -120,6 +112,16 @@ public sealed class SendEmailTool(
                     "No enabled account permits sending email. Use list_accounts to see each account's permissions.");
 
             account = selected;
+        }
+
+        List<OutboundEmailAttachment>? resolvedAttachments = null;
+        if (attachments is { Count: > 0 })
+        {
+            // A refused send must leave single-use attachments available for retry.
+            var (resolved, consumeError) = ResolveAttachments(attachments);
+            if (consumeError != null)
+                throw new McpException(consumeError);
+            resolvedAttachments = resolved;
         }
 
         try
@@ -213,7 +215,7 @@ public sealed class SendEmailTool(
                 var stored = attachmentStore.TryConsume(att.AttachmentId);
                 if (stored == null)
                 {
-                    return (null, $"attachments[{i}]: attachmentId '{att.AttachmentId}' is unknown or expired. Re-upload via POST /attachments.");
+                    return (null, $"attachments[{i}]: attachmentId '{att.AttachmentId}' is unknown or expired, or this credential cannot access it. Upload the file or fetch the attachment again.");
                 }
                 totalBytes += stored.Bytes.Length;
                 if (totalBytes > MaxTotalAttachmentBytes)

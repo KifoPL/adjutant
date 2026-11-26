@@ -1,6 +1,8 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Adjutant.Core.Configuration;
 using Adjutant.Core.Security;
+using Adjutant.Core.Services;
 using Adjutant.HttpServer.BlazorAdmin;
 using Adjutant.HttpServer.Security;
 using Microsoft.AspNetCore;
@@ -28,6 +30,7 @@ internal static class AuthorizationEndpoint
     public const string ConsentPath = "/connect/consent";
     public const string DecisionField = "decision";
     public const string Allow = "allow";
+    public const string AllowedAccountsProperty = "allowedAccounts";
 
     /// <summary>Claim (in tokens) naming the provider that vouched for the owner, as in the console cookie.</summary>
     public const string ProviderClaim = "idp";
@@ -60,7 +63,10 @@ internal static class AuthorizationEndpoint
         IOptionsMonitor<AdminAuthConfiguration> adminAuth,
         IAdminUserStore adminUsers,
         IAdminTokenStore adminTokens,
-        IHostEnvironment environment)
+        IHostEnvironment environment,
+        IAccountRegistry accounts,
+        IOpenIddictApplicationManager applications,
+        IOpenIddictAuthorizationManager authorizations)
     {
         var request = http.GetOpenIddictServerRequest()
             ?? throw new InvalidOperationException("The OpenID Connect request can't be retrieved.");
@@ -103,6 +109,18 @@ internal static class AuthorizationEndpoint
         if (user is null || !CanApprove(user, environment.IsDevelopment() && !FunnelRequest.IsFunnel(http)))
             return Reject(Errors.AccessDenied, "Connecting an app needs a Google or Microsoft sign-in, not the admin token.");
 
+        string[] allowedAccounts;
+        try
+        {
+            allowedAccounts = await McpAccountSelection.ResolveAsync(accounts,
+                http.Request.Form[McpAccountSelection.ModeField].ToString(),
+                http.Request.Form[McpAccountSelection.AccountField]);
+        }
+        catch (ArgumentException ex)
+        {
+            return Reject(Errors.InvalidRequest, ex.Message);
+        }
+
         var email = user.FindFirstValue(ClaimTypes.Email);
         var provider = user.FindFirstValue(AdminOidc.ProviderClaimType) ?? AdminSessionPolicy.TokenProvider;
         var subject = email ?? "admin";
@@ -115,6 +133,8 @@ internal static class AuthorizationEndpoint
             identity.SetClaim(Claims.Email, email);
         if (user.FindFirstValue(ClaimTypes.NameIdentifier) is { Length: > 0 } adminSubject)
             identity.SetClaim(AdminSubjectClaim, adminSubject);
+        foreach (var accountId in allowedAccounts)
+            identity.AddClaim(new Claim(McpAccountSelection.ClaimType, accountId));
 
         // offline_access is always granted so the connection survives the one-hour access token; MCP
         // clients don't all ask for it, and the authorization server may issue a refresh token at its
@@ -125,7 +145,29 @@ internal static class AuthorizationEndpoint
             ? [Destinations.AccessToken, Destinations.IdentityToken]
             : [Destinations.AccessToken]);
 
-        return Results.SignIn(new ClaimsPrincipal(identity), properties: null, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+        var principal = new ClaimsPrincipal(identity);
+        if (allowedAccounts.Length > 0)
+        {
+            // Use a separate grant for each consent, even when the same client connects twice.
+            // OpenIddict carries the account claims through the code and refresh token.
+            var ct = http.RequestAborted;
+            var application = await applications.FindByClientIdAsync(request.ClientId!, ct)
+                ?? throw new InvalidOperationException("The approved OAuth client no longer exists.");
+            var authorization = new OpenIddictAuthorizationDescriptor
+            {
+                ApplicationId = await applications.GetIdAsync(application, ct),
+                CreationDate = DateTimeOffset.UtcNow,
+                Principal = principal,
+                Status = Statuses.Valid,
+                Subject = subject,
+                Type = AuthorizationTypes.AdHoc
+            };
+            authorization.Scopes.UnionWith(principal.GetScopes());
+            authorization.Properties[AllowedAccountsProperty] = JsonSerializer.SerializeToElement(allowedAccounts);
+            identity.SetAuthorizationId(await authorizations.GetIdAsync(await authorizations.CreateAsync(authorization, ct), ct));
+        }
+
+        return Results.SignIn(principal, properties: null, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
     }
 
     private static bool NeedsFreshSignIn(OpenIddictRequest request, AuthenticationProperties? properties)
@@ -142,8 +184,14 @@ internal static class AuthorizationEndpoint
     {
         IEnumerable<KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues>> source =
             request.HasFormContentType ? request.Form : request.Query;
-        return QueryString.Create(source.Where(p => p.Key != DecisionField && p.Key != "__RequestVerificationToken"));
+        return QueryString.Create(source.Where(p => IsOAuthParameter(p.Key)));
     }
+
+    internal static bool IsOAuthParameter(string name) =>
+        !string.Equals(name, DecisionField, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(name, McpAccountSelection.ModeField, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(name, McpAccountSelection.AccountField, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(name, "__RequestVerificationToken", StringComparison.OrdinalIgnoreCase);
 
     private static IResult Reject(string error, string description) =>
         Results.Forbid(

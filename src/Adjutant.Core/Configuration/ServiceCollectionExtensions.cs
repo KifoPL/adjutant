@@ -1,10 +1,12 @@
 using Adjutant.Core.Prompts;
 using Adjutant.Core.Providers;
 using Adjutant.Core.Providers.Dav;
+using Adjutant.Core.Security;
 using Adjutant.Core.Services;
 using Adjutant.Core.Tools;
 using Adjutant.Core.Utilities;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Adjutant.Core.Configuration;
 
@@ -69,6 +71,8 @@ public static class ServiceCollectionExtensions
 
         // Register account registry
         services.AddSingleton<IAccountRegistry, AccountRegistry>();
+        services.TryAddSingleton<IMcpCallerContextAccessor, UnrestrictedMcpCallerContextAccessor>();
+        services.AddKeyedSingleton<IAccountRegistry, McpAccountRegistry>(McpAccountRegistry.ServiceKey);
 
         // Attachment store (in-memory; eviction sweeper is registered by the
         // HTTP server only — stdio mode never uploads, so lazy expiry on

@@ -68,6 +68,8 @@ public sealed class McpApiKeyHandler : AuthenticationHandler<AuthenticationSchem
                 new Claim(KeyIdClaimType, key.Id)
             ],
             SchemeName);
+        foreach (var accountId in key.AllowedAccounts ?? [])
+            identity.AddClaim(new Claim(McpAccountSelection.ClaimType, accountId));
 
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName);
         return Task.FromResult(AuthenticateResult.Success(ticket));
